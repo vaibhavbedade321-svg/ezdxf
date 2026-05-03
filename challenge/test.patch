@@ -56,10 +56,10 @@ index 0000000..cc02111
 +esac
 diff --git a/tests/test_06_math/test_667_polygon_buffer.py b/tests/test_06_math/test_667_polygon_buffer.py
 new file mode 100644
-index 0000000..ca6dd24
+index 0000000..9f4017a
 --- /dev/null
 +++ b/tests/test_06_math/test_667_polygon_buffer.py
-@@ -0,0 +1,550 @@
+@@ -0,0 +1,562 @@
 +# Copyright (c) 2025, Manfred Moitzi
 +# License: MIT License
 +"""Tests for ezdxf.math.buffer.offset_polygon_2d."""
@@ -332,6 +332,18 @@ index 0000000..ca6dd24
 +            SQUARE, 1.0, join_style=JoinStyle.ROUND, arc_segment_angle=math.pi / 16
 +        )[0]
 +        assert len(rounded) > len(bevel)
++
++    def test_bevel_inflate_vertices_lie_on_offset_boundary(self):
++        # For a BEVEL inflate of a square every output vertex is a parallel
++        # offset endpoint (the chord's endpoints are exactly the two
++        # adjacent edges' offsets at the corner), so every vertex must lie
++        # at unsigned distance abs(distance) from the input polygon's
++        # boundary -- the spec's straight-edge distance property.
++        d = 1.0
++        result = offset_polygon_2d(SQUARE, d, join_style=JoinStyle.BEVEL)[0]
++        for v in result:
++            dist = _min_distance_to_polygon(v, [Vec2(p) for p in SQUARE])
++            assert abs(dist - d) < 1e-6
 +
 +    def test_inflate_contains_original(self):
 +        d = 0.7
