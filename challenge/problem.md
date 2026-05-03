@@ -18,19 +18,20 @@ offset_polygon_2d using the round join style, or an empty list when
 none is produced.
 
 polygon is a closed polygon given as an iterable of vertices. The Z
-component of each vertex is ignored, a trailing duplicate of the first
-vertex is permitted, and consecutive duplicate vertices are silently
-removed. Inputs with fewer than three distinct vertices return an
-empty list, except a non-empty input with distance == 0 returns that
-input as a single polygon. distance is signed: positive inflates,
-negative deflates.
+component of each vertex is ignored. The function silently removes
+consecutive duplicate vertices and a trailing duplicate of the first
+vertex; if fewer than three distinct vertices remain the function
+returns an empty list regardless of distance. Clockwise inputs are
+silently reversed so that every returned polygon is counter-clockwise.
+distance is signed: positive inflates, negative deflates. With
+distance == 0 the function returns the normalised polygon (after
+deduplication and orientation reversal) as the single element of a
+one-element list.
 
 Each polygon in the return value is a list of distinct Vec2 instances
 in counter-clockwise orientation; the closing edge from the last to
-the first vertex is implicit. Clockwise inputs are silently reversed
-so every returned polygon is counter-clockwise. Inflating any
-non-degenerate polygon yields exactly one polygon. Deflating yields
-one polygon or none.
+the first vertex is implicit. Inflating any non-degenerate polygon
+yields exactly one polygon. Deflating yields one polygon or none.
 
 An inflated output strictly contains the input polygon. Every output
 vertex on a straight portion of the offset boundary lies at unsigned

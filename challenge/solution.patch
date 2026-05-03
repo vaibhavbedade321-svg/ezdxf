@@ -12,10 +12,10 @@ index 062fed9..e433593 100644
  from .polyline import *
 diff --git a/src/ezdxf/math/buffer.py b/src/ezdxf/math/buffer.py
 new file mode 100644
-index 0000000..066d3f3
+index 0000000..d51b765
 --- /dev/null
 +++ b/src/ezdxf/math/buffer.py
-@@ -0,0 +1,504 @@
+@@ -0,0 +1,502 @@
 +# Copyright (c) 2025, Manfred Moitzi
 +# License: MIT License
 +"""Polygon buffering (offset / inflate / deflate) for closed 2D polygons."""
@@ -83,8 +83,6 @@ index 0000000..066d3f3
 +
 +    verts = _normalise_input(polygon)
 +    if len(verts) < 3:
-+        if distance == 0.0 and verts:
-+            return [list(verts)]
 +        return []
 +
 +    if _signed_area(verts) < 0.0:

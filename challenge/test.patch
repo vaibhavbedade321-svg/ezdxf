@@ -56,10 +56,10 @@ index 0000000..cc02111
 +esac
 diff --git a/tests/test_06_math/test_667_polygon_buffer.py b/tests/test_06_math/test_667_polygon_buffer.py
 new file mode 100644
-index 0000000..dd01bda
+index 0000000..ca6dd24
 --- /dev/null
 +++ b/tests/test_06_math/test_667_polygon_buffer.py
-@@ -0,0 +1,531 @@
+@@ -0,0 +1,550 @@
 +# Copyright (c) 2025, Manfred Moitzi
 +# License: MIT License
 +"""Tests for ezdxf.math.buffer.offset_polygon_2d."""
@@ -172,6 +172,25 @@ index 0000000..dd01bda
 +        result = offset_polygon_2d(cw, 0.0)
 +        assert len(result) == 1
 +        assert _is_ccw(result[0])
++
++    def test_zero_distance_deduplicates_consecutive_duplicates(self):
++        # Normalization (consecutive-duplicate removal) must apply even
++        # when no offset is performed.
++        polygon = [(0, 0), (0, 0), (4, 0), (4, 0), (4, 4), (0, 4), (0, 4)]
++        result = offset_polygon_2d(polygon, 0.0)
++        assert len(result) == 1
++        poly = result[0]
++        assert len(poly) == 4
++        assert _is_ccw(poly)
++
++    def test_zero_distance_with_two_distinct_vertices_returns_empty(self):
++        # After deduplication only two distinct vertices remain.
++        assert offset_polygon_2d([(0, 0), (0, 0), (1, 1)], 0.0) == []
++        assert offset_polygon_2d([(0, 0), (1, 1)], 0.0) == []
++
++    def test_zero_distance_with_single_vertex_returns_empty(self):
++        assert offset_polygon_2d([(0, 0)], 0.0) == []
++        assert offset_polygon_2d([(0, 0), (0, 0), (0, 0)], 0.0) == []
 +
 +    def test_invalid_miter_limit_raises(self):
 +        with pytest.raises(ValueError):
