@@ -1,9 +1,64 @@
+diff --git a/test.sh b/test.sh
+new file mode 100755
+index 0000000..ffa5c66
+--- /dev/null
++++ b/test.sh
+@@ -0,0 +1,49 @@
++#!/usr/bin/env bash
++# Olympus challenge runner for ezdxf polygon buffer.
++#
++# Usage:
++#     ./test.sh --output_path <junit.xml> base   # existing regression tests
++#     ./test.sh --output_path <junit.xml> new    # new buffer module tests
++set -euo pipefail
++
++OUTPUT_PATH=""
++MODE=""
++
++while [[ $# -gt 0 ]]; do
++    case "$1" in
++        --output_path)
++            OUTPUT_PATH="$2"
++            shift 2
++            ;;
++        base|new)
++            MODE="$1"
++            shift
++            ;;
++        *)
++            echo "unknown argument: $1" >&2
++            exit 2
++            ;;
++    esac
++done
++
++if [[ -z "$OUTPUT_PATH" || -z "$MODE" ]]; then
++    echo "usage: test.sh --output_path <path> {base|new}" >&2
++    exit 2
++fi
++
++cd "$(dirname "$0")"
++
++NEW_TEST="tests/test_06_math/test_667_polygon_buffer.py"
++
++case "$MODE" in
++    base)
++        python3 -m pytest tests/ \
++            --ignore=tests/test_08_addons \
++            --ignore="$NEW_TEST" \
++            -v --junitxml="$OUTPUT_PATH"
++        ;;
++    new)
++        python3 -m pytest "$NEW_TEST" \
++            -v --junitxml="$OUTPUT_PATH"
++        ;;
++esac
 diff --git a/tests/test_06_math/test_667_polygon_buffer.py b/tests/test_06_math/test_667_polygon_buffer.py
 new file mode 100644
-index 0000000..7ceded9
+index 0000000..ba9be8d
 --- /dev/null
 +++ b/tests/test_06_math/test_667_polygon_buffer.py
-@@ -0,0 +1,435 @@
+@@ -0,0 +1,511 @@
 +# Copyright (c) 2025, Manfred Moitzi
 +# License: MIT License
 +"""Tests for ezdxf.math.buffer.offset_polygon_2d."""
@@ -146,6 +201,35 @@ index 0000000..7ceded9
 +        assert len(result) == 1
 +        assert abs(_signed_area(result[0]) - 36.0) < 1e-9
 +
++    def test_z_component_is_ignored(self):
++        flat = [(0, 0), (4, 0), (4, 4), (0, 4)]
++        with_z = [(0, 0, 5), (4, 0, -3), (4, 4, 17), (0, 4, 0)]
++        flat_result = offset_polygon_2d(
++            flat, 1.0, join_style=JoinStyle.MITER, miter_limit=10
++        )[0]
++        z_result = offset_polygon_2d(
++            with_z, 1.0, join_style=JoinStyle.MITER, miter_limit=10
++        )[0]
++        assert len(flat_result) == len(z_result)
++        for a, b in zip(
++            sorted((v.x, v.y) for v in flat_result),
++            sorted((v.x, v.y) for v in z_result),
++        ):
++            assert abs(a[0] - b[0]) < 1e-9
++            assert abs(a[1] - b[1]) < 1e-9
++
++    def test_returned_vertices_are_distinct(self):
++        for join in (JoinStyle.MITER, JoinStyle.BEVEL, JoinStyle.ROUND):
++            kw = {"miter_limit": 10} if join is JoinStyle.MITER else {}
++            poly = offset_polygon_2d(SQUARE, 1.0, join_style=join, **kw)[0]
++            for i in range(len(poly)):
++                for j in range(i + 1, len(poly)):
++                    a = poly[i]
++                    b = poly[j]
++                    assert not (abs(a.x - b.x) < 1e-9 and abs(a.y - b.y) < 1e-9), (
++                        f"duplicate vertex with join={join}: {a} == {b}"
++                    )
++
 +
 +class TestPublicReExports:
 +    def test_symbols_reexported_from_math_package(self):
@@ -283,6 +367,23 @@ index 0000000..7ceded9
 +        for v in [Vec2(p) for p in self.L_SHAPE]:
 +            assert is_point_in_polygon_2d(v, list(poly)) >= 0
 +
++    def test_concave_corner_uses_line_intersection_regardless_of_style(self):
++        # The L-shape's concave corner sits at (2, 2). Inflating by 0.3
++        # places that corner's offset vertex at (2.3, 2.3) regardless of
++        # which join style is requested.
++        d = 0.3
++        expected = Vec2(2.3, 2.3)
++        for style, kw in (
++            (JoinStyle.MITER, {"miter_limit": 10}),
++            (JoinStyle.BEVEL, {}),
++            (JoinStyle.ROUND, {}),
++        ):
++            poly = offset_polygon_2d(self.L_SHAPE, d, join_style=style, **kw)[0]
++            assert any(
++                abs(v.x - expected.x) < 1e-9 and abs(v.y - expected.y) < 1e-9
++                for v in poly
++            ), f"missing concave corner intersection for style {style}"
++
 +
 +class TestDeflate:
 +    def test_square_deflate(self):
@@ -404,6 +505,36 @@ index 0000000..7ceded9
 +        for v in result:
 +            dist = _min_distance_to_polygon(v, [Vec2(p) for p in SQUARE])
 +            assert abs(dist - d) < 1e-6
++
++    def test_round_chord_angle_does_not_exceed_limit(self):
++        # For each pair of consecutive arc vertices that share an input
++        # corner as their common centre, the angle they subtend at that
++        # centre must not exceed the configured arc_segment_angle.
++        d = 1.0
++        max_angle = math.pi / 8
++        result = offset_polygon_2d(
++            SQUARE, d, join_style=JoinStyle.ROUND,
++            arc_segment_angle=max_angle,
++        )[0]
++        corners = [Vec2(p) for p in SQUARE]
++        n = len(result)
++        tol = 1e-9
++        for i in range(n):
++            a = result[i]
++            b = result[(i + 1) % n]
++            for c in corners:
++                da = c.distance(a)
++                db = c.distance(b)
++                if abs(da - d) < 1e-6 and abs(db - d) < 1e-6:
++                    va = (a.x - c.x, a.y - c.y)
++                    vb = (b.x - c.x, b.y - c.y)
++                    cos_t = (va[0] * vb[0] + va[1] * vb[1]) / (d * d)
++                    cos_t = max(-1.0, min(1.0, cos_t))
++                    angle = math.acos(cos_t)
++                    assert angle <= max_angle + tol, (
++                        f"chord at corner {c} subtends {angle} > {max_angle}"
++                    )
++                    break
 +
 +
 +class TestNumericalStability:

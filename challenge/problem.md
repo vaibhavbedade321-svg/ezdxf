@@ -11,26 +11,26 @@ offset_polygon_2d(polygon, distance, *, join_style=JoinStyle.ROUND,
 miter_limit=2.0, arc_segment_angle=math.pi / 16.0) -> list[list[Vec2]].
 Both names must additionally be importable as `from ezdxf.math import
 JoinStyle, offset_polygon_2d` and the re-exports must be the identical
-class and function objects (verified with `is`). Add a convenience
-wrapper offset_closed_polygon_2d(vertices, offset) -> list[Vec2] to
-ezdxf.math.offset2d (and its __all__) that returns the first polygon
-produced by offset_polygon_2d using the round join style, or an empty
-list when none is produced; offset == 0 must return the input as a
-non-empty list.
+class and function objects. Add a convenience wrapper
+offset_closed_polygon_2d(vertices, offset) -> list[Vec2] to
+ezdxf.math.offset2d that returns the first polygon produced by
+offset_polygon_2d using the round join style, or an empty list when
+none is produced.
 
-polygon is a closed polygon given as an iterable of vertices. Z is
-ignored, a trailing duplicate of the first vertex is permitted, and
-consecutive duplicate vertices are silently removed. Inputs with
-fewer than three distinct vertices return an empty list, except a
-non-empty input with distance == 0 returns that input as a single
-polygon. distance is signed: positive inflates, negative deflates.
+polygon is a closed polygon given as an iterable of vertices. The Z
+component of each vertex is ignored, a trailing duplicate of the first
+vertex is permitted, and consecutive duplicate vertices are silently
+removed. Inputs with fewer than three distinct vertices return an
+empty list, except a non-empty input with distance == 0 returns that
+input as a single polygon. distance is signed: positive inflates,
+negative deflates.
 
-The output is a list of polygons. Each polygon is a list of distinct
-Vec2 instances in counter-clockwise orientation; the closing edge from
-the last to the first vertex is implicit. Clockwise inputs are
-silently reversed so every returned polygon is counter-clockwise.
-Inflating any non-degenerate polygon yields exactly one polygon.
-Deflating yields one polygon or none.
+Each polygon in the return value is a list of distinct Vec2 instances
+in counter-clockwise orientation; the closing edge from the last to
+the first vertex is implicit. Clockwise inputs are silently reversed
+so every returned polygon is counter-clockwise. Inflating any
+non-degenerate polygon yields exactly one polygon. Deflating yields
+one polygon or none.
 
 An inflated output strictly contains the input polygon. Every output
 vertex on a straight portion of the offset boundary lies at unsigned
@@ -56,5 +56,4 @@ analytical line/line intersection regardless of the requested style.
 
 miter_limit < 1.0 raises ValueError. arc_segment_angle <= 0 raises
 ValueError. Multi-component output for deflations that split a
-polygon at a narrow neck is out of scope and is not exercised by the
-tests.
+polygon at a narrow neck is out of scope.
