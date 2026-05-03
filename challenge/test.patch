@@ -1,9 +1,9 @@
 diff --git a/test.sh b/test.sh
 new file mode 100755
-index 0000000..ffa5c66
+index 0000000..cc02111
 --- /dev/null
 +++ b/test.sh
-@@ -0,0 +1,49 @@
+@@ -0,0 +1,50 @@
 +#!/usr/bin/env bash
 +# Olympus challenge runner for ezdxf polygon buffer.
 +#
@@ -38,6 +38,7 @@ index 0000000..ffa5c66
 +fi
 +
 +cd "$(dirname "$0")"
++export PYTHONPATH="$(pwd)/src${PYTHONPATH:+:$PYTHONPATH}"
 +
 +NEW_TEST="tests/test_06_math/test_667_polygon_buffer.py"
 +
