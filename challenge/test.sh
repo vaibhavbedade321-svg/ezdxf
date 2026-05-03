@@ -31,21 +31,19 @@ if [[ -z "$OUTPUT_PATH" || -z "$MODE" ]]; then
     exit 2
 fi
 
-# Run from the repository root regardless of where this script lives.
 cd "$(dirname "$0")/.."
 
-# Restrict the test selection to the math test suite. The buffer module is
-# entirely contained within ezdxf.math so this keeps regression checks
-# focused and fast.
+NEW_TEST="tests/test_06_math/test_667_polygon_buffer.py"
+
 case "$MODE" in
     base)
-        # Run every math test except the new buffer file.
-        python3 -m pytest tests/test_06_math/ \
-            --ignore=tests/test_06_math/test_667_polygon_buffer.py \
+        python3 -m pytest tests/ \
+            --ignore=tests/test_08_addons \
+            --ignore="$NEW_TEST" \
             -v --junitxml="$OUTPUT_PATH"
         ;;
     new)
-        python3 -m pytest tests/test_06_math/test_667_polygon_buffer.py \
+        python3 -m pytest "$NEW_TEST" \
             -v --junitxml="$OUTPUT_PATH"
         ;;
 esac
