@@ -1,0 +1,741 @@
+diff --git a/src/ezdxf/math/__init__.py b/src/ezdxf/math/__init__.py
+index 062fed9..e433593 100644
+--- a/src/ezdxf/math/__init__.py
++++ b/src/ezdxf/math/__init__.py
+@@ -24,6 +24,7 @@ from .box import *
+ from .shape import *
+ from .bbox import *
+ from .offset2d import *
++from .buffer import JoinStyle, offset_polygon_2d
+ from .transformtools import *
+ from .curvetools import *
+ from .polyline import *
+diff --git a/src/ezdxf/math/buffer.py b/src/ezdxf/math/buffer.py
+new file mode 100644
+index 0000000..946acc8
+--- /dev/null
++++ b/src/ezdxf/math/buffer.py
+@@ -0,0 +1,679 @@
++# Copyright (c) 2025, Manfred Moitzi
++# License: MIT License
++"""Polygon buffering (offset / inflate / deflate) for closed 2D polygons.
++
++This module provides a robust polygon buffer operation suitable for CAD style
++inflate/deflate workflows. The key entry point is :func:`offset_polygon_2d`
++which takes a closed polygon and a signed offset distance and returns a list
++of closed polygons describing the buffered region.
++
++Compared to the simple :func:`ezdxf.math.offset2d.offset_vertices_2d` helper
++this implementation:
++
++* supports three corner join styles: round, miter (with miter limit) and
++  bevel
++* normalises the input orientation automatically (CW input is reversed to
++  CCW)
++* removes self-intersections caused by inward offsets exceeding the local
++  inradius
++* may return zero, one or several polygons (deflating a "barbell" shape can
++  split it into two disjoint pieces, for example)
++
++The algorithm performs three steps:
++
++1. Build the *raw* offset polyline by translating each input edge by the
++   offset distance perpendicular to the edge direction and joining adjacent
++   offset edges with the requested corner style.
++2. Detect self-intersections of the raw polyline using a brute force segment
++   intersection sweep and split the polyline into a planar embedding.
++3. Trace simple loops in that embedding and keep only those whose signed
++   area is positive (matching the CCW input) AND whose vertices lie at the
++   expected signed distance from the original boundary. The latter check
++   discards spurious loops created when the offset distance exceeds the
++   local thickness of the polygon.
++"""
++from __future__ import annotations
++from typing import Iterable, Iterator, Sequence
++import enum
++import math
++
++from ezdxf.math._ctypes import Vec2, UVec
++
++
++__all__ = ["JoinStyle", "offset_polygon_2d"]
++
++
++# Numerical tolerance for geometric comparisons. The implementation aims to
++# be robust for inputs in the order of unit length. Inputs with very
++# different magnitudes can be scaled by the caller.
++_EPS = 1e-9
++_AREA_EPS = 1e-12
++# Validation tolerance is relaxed proportional to the offset distance so that
++# inputs with large coordinates do not suffer from accumulated rounding.
++_VALIDATION_REL = 1e-6
++_VALIDATION_ABS = 1e-9
++
++
++class JoinStyle(enum.Enum):
++    """How adjacent offset segments are joined at convex corners."""
++
++    MITER = "miter"
++    ROUND = "round"
++    BEVEL = "bevel"
++
++
++# ---------------------------------------------------------------------------
++# Public API
++# ---------------------------------------------------------------------------
++
++
++def offset_polygon_2d(
++    polygon: Iterable[UVec],
++    distance: float,
++    *,
++    join_style: JoinStyle = JoinStyle.ROUND,
++    miter_limit: float = 2.0,
++    arc_segment_angle: float = math.pi / 16.0,
++) -> list[list[Vec2]]:
++    """Compute the offset (buffer) of a closed 2D polygon.
++
++    Args:
++        polygon: closed polygon as iterable of vertices. The Z component is
++            ignored. The first and last vertex may be equal but do not have
++            to be.
++        distance: signed offset distance. Positive values *inflate* the
++            polygon (move the boundary outward), negative values *deflate*
++            the polygon (move the boundary inward). ``0`` returns the
++            normalised input as a single polygon.
++        join_style: how convex corners are joined. Concave corners always
++            use the analytical line/line intersection of the two adjacent
++            parallel offset edges.
++        miter_limit: when the join style is :attr:`JoinStyle.MITER` and the
++            miter length would exceed ``miter_limit * abs(distance)`` the
++            corner falls back to a bevel join. Must be ``>= 1``.
++        arc_segment_angle: maximum angle (in radians) of a single chord when
++            approximating a round join with line segments. Smaller values
++            produce smoother arcs at the cost of more vertices.
++
++    Returns:
++        A list of polygons. Each polygon is a list of distinct
++        :class:`Vec2` vertices in counter-clockwise orientation. The closing
++        edge between the last and first vertex is implicit.
++
++        * Inflating any non-degenerate polygon yields exactly one polygon.
++        * Deflating may yield zero polygons (the polygon is fully consumed),
++          one polygon or several polygons (a thin neck disconnects two
++          regions).
++
++    Raises:
++        ValueError: if ``miter_limit`` is less than ``1`` or
++            ``arc_segment_angle`` is not positive.
++    """
++    if miter_limit < 1.0:
++        raise ValueError("miter_limit must be >= 1.0")
++    if arc_segment_angle <= 0.0:
++        raise ValueError("arc_segment_angle must be > 0")
++
++    verts = _normalise_input(polygon)
++    if len(verts) < 3:
++        if distance == 0.0 and verts:
++            return [list(verts)]
++        return []
++
++    # Always operate on counter-clockwise input. The buffered output is also
++    # returned in counter-clockwise orientation.
++    if _signed_area(verts) < 0.0:
++        verts = list(reversed(verts))
++
++    if distance == 0.0:
++        return [list(verts)]
++
++    raw = _build_raw_offset(
++        verts,
++        distance,
++        join_style=join_style,
++        miter_limit=miter_limit,
++        arc_segment_angle=arc_segment_angle,
++    )
++    if len(raw) < 3:
++        return []
++
++    loops = _extract_simple_loops(raw)
++    abs_d = abs(distance)
++    tol = max(_VALIDATION_ABS, _VALIDATION_REL * abs_d)
++    expected_min_distance = abs_d - tol
++
++    result: list[list[Vec2]] = []
++    for loop in loops:
++        area = _signed_area(loop)
++        if area <= _AREA_EPS:
++            continue
++        if not _is_loop_at_offset_distance(
++            loop, verts, expected_min_distance
++        ):
++            # Loop generated by over-deflation or by self-intersection.
++            continue
++        result.append(loop)
++    return result
++
++
++# ---------------------------------------------------------------------------
++# Input normalisation
++# ---------------------------------------------------------------------------
++
++
++def _normalise_input(polygon: Iterable[UVec]) -> list[Vec2]:
++    """Return a list of distinct :class:`Vec2` vertices.
++
++    Removes consecutive duplicate vertices and a duplicate closing vertex if
++    present. Returns an empty list for an empty input.
++    """
++    raw = [Vec2(p) for p in polygon]
++    if not raw:
++        return []
++    cleaned: list[Vec2] = [raw[0]]
++    for v in raw[1:]:
++        if not _isclose_v2(v, cleaned[-1]):
++            cleaned.append(v)
++    if len(cleaned) >= 2 and _isclose_v2(cleaned[0], cleaned[-1]):
++        cleaned.pop()
++    return cleaned
++
++
++def _isclose_v2(a: Vec2, b: Vec2, *, tol: float = _EPS) -> bool:
++    return abs(a.x - b.x) <= tol and abs(a.y - b.y) <= tol
++
++
++def _signed_area(polygon: Sequence[Vec2]) -> float:
++    """Return the signed area of a polygon. Positive means CCW."""
++    n = len(polygon)
++    if n < 3:
++        return 0.0
++    s = 0.0
++    for i in range(n):
++        a = polygon[i]
++        b = polygon[(i + 1) % n]
++        s += a.x * b.y - b.x * a.y
++    return 0.5 * s
++
++
++# ---------------------------------------------------------------------------
++# Raw offset construction
++# ---------------------------------------------------------------------------
++
++
++def _build_raw_offset(
++    verts: Sequence[Vec2],
++    distance: float,
++    *,
++    join_style: JoinStyle,
++    miter_limit: float,
++    arc_segment_angle: float,
++) -> list[Vec2]:
++    """Return the raw offset polyline (may self-intersect).
++
++    The polyline is closed implicitly: the last vertex is connected back to
++    the first one. Adjacent collinear vertices are removed to keep the
++    polyline minimal but otherwise no cleanup is performed.
++    """
++    n = len(verts)
++    # Pre-compute unit direction and right-hand normal for every input edge.
++    # The right-hand normal of an edge that points "east" points "south",
++    # which is the *outside* of a CCW polygon. Therefore moving an edge by
++    # ``+distance`` along its right-hand normal inflates a CCW polygon.
++    dirs: list[Vec2] = []
++    rights: list[Vec2] = []
++    for i in range(n):
++        a = verts[i]
++        b = verts[(i + 1) % n]
++        dx = b.x - a.x
++        dy = b.y - a.y
++        length = math.hypot(dx, dy)
++        if length < _EPS:
++            if dirs:
++                dirs.append(dirs[-1])
++                rights.append(rights[-1])
++            else:
++                dirs.append(Vec2(1.0, 0.0))
++                rights.append(Vec2(0.0, -1.0))
++            continue
++        unit = Vec2(dx / length, dy / length)
++        dirs.append(unit)
++        rights.append(Vec2(unit.y, -unit.x))
++
++    # Offset endpoints for each edge.
++    edge_starts: list[Vec2] = []
++    edge_ends: list[Vec2] = []
++    for i in range(n):
++        a = verts[i]
++        b = verts[(i + 1) % n]
++        nx = rights[i].x * distance
++        ny = rights[i].y * distance
++        edge_starts.append(Vec2(a.x + nx, a.y + ny))
++        edge_ends.append(Vec2(b.x + nx, b.y + ny))
++
++    out: list[Vec2] = []
++    for i in range(n):
++        prev_idx = (i - 1) % n
++        prev_dir = dirs[prev_idx]
++        curr_dir = dirs[i]
++        cross = prev_dir.x * curr_dir.y - prev_dir.y * curr_dir.x
++        dot = prev_dir.x * curr_dir.x + prev_dir.y * curr_dir.y
++
++        # In a CCW polygon a left turn corresponds to ``cross > 0``. A left
++        # turn is a *convex* corner. For an inflate (distance > 0) the two
++        # adjacent offset edges separate at convex corners and need to be
++        # connected with a corner piece. They overlap at concave corners and
++        # need the analytical line/line intersection. The roles flip for a
++        # deflate.
++        is_left_turn = cross > _EPS
++        is_right_turn = cross < -_EPS
++
++        prev_offset_end = edge_ends[prev_idx]
++        curr_offset_start = edge_starts[i]
++        corner = verts[i]
++
++        if not is_left_turn and not is_right_turn:
++            if dot >= 0.0:
++                # Collinear continuation - keep one shared vertex.
++                _push(out, curr_offset_start)
++            else:
++                # 180 degree U-turn.
++                _emit_uturn(
++                    out,
++                    prev_offset_end,
++                    curr_offset_start,
++                    corner,
++                    distance,
++                    join_style,
++                    arc_segment_angle,
++                    prev_dir,
++                )
++            continue
++
++        if distance > 0.0:
++            fill_gap = is_left_turn
++        else:
++            fill_gap = is_right_turn
++
++        if not fill_gap:
++            ip = _line_line_intersection(
++                edge_starts[prev_idx], edge_ends[prev_idx],
++                edge_starts[i], edge_ends[i],
++            )
++            if ip is None:
++                _push(out, prev_offset_end)
++                _push(out, curr_offset_start)
++            else:
++                _push(out, ip)
++            continue
++
++        # Fill case: the two offset edges separate, fill the gap.
++        if join_style is JoinStyle.MITER:
++            ip = _line_line_intersection(
++                edge_starts[prev_idx], edge_ends[prev_idx],
++                edge_starts[i], edge_ends[i],
++            )
++            if ip is None:
++                _push(out, prev_offset_end)
++                _push(out, curr_offset_start)
++                continue
++            miter_len = math.hypot(ip.x - corner.x, ip.y - corner.y)
++            if miter_len > miter_limit * abs(distance) + _EPS:
++                _push(out, prev_offset_end)
++                _push(out, curr_offset_start)
++            else:
++                _push(out, ip)
++        elif join_style is JoinStyle.BEVEL:
++            _push(out, prev_offset_end)
++            _push(out, curr_offset_start)
++        else:
++            # ROUND
++            _push(out, prev_offset_end)
++            _emit_arc(
++                out,
++                corner,
++                prev_offset_end,
++                curr_offset_start,
++                distance,
++                arc_segment_angle,
++            )
++
++    while len(out) >= 2 and _isclose_v2(out[0], out[-1]):
++        out.pop()
++    return out
++
++
++def _push(out: list[Vec2], v: Vec2) -> None:
++    """Append ``v`` to ``out`` unless it duplicates the previous vertex."""
++    if not out or not _isclose_v2(out[-1], v):
++        out.append(v)
++
++
++def _emit_uturn(
++    out: list[Vec2],
++    a: Vec2,
++    b: Vec2,
++    corner: Vec2,
++    distance: float,
++    join_style: JoinStyle,
++    arc_segment_angle: float,
++    prev_dir: Vec2,
++) -> None:
++    """Emit corner vertices for a 180 degree turn.
++
++    ``a`` and ``b`` are antipodal on the offset circle around ``corner``.
++    Bevel and miter joins cannot meaningfully represent a 180 degree turn,
++    so a single midpoint perpendicular to the previous direction is emitted.
++    """
++    _push(out, a)
++    if join_style is JoinStyle.ROUND:
++        _emit_arc(out, corner, a, b, distance, arc_segment_angle)
++        return
++    nx = prev_dir.x * abs(distance)
++    ny = prev_dir.y * abs(distance)
++    if distance > 0:
++        tip = Vec2(corner.x + nx, corner.y + ny)
++    else:
++        tip = Vec2(corner.x - nx, corner.y - ny)
++    _push(out, tip)
++    _push(out, b)
++
++
++def _emit_arc(
++    out: list[Vec2],
++    center: Vec2,
++    a: Vec2,
++    b: Vec2,
++    distance: float,
++    arc_segment_angle: float,
++) -> None:
++    """Emit interpolated vertices for a circular arc from ``a`` to ``b``.
++
++    The arc is drawn on the circle of radius ``abs(distance)`` around
++    ``center``. The endpoint ``b`` is included; ``a`` is assumed to already
++    be present in ``out``.
++    """
++    radius = abs(distance)
++    if radius < _EPS:
++        return
++    ang_a = math.atan2(a.y - center.y, a.x - center.x)
++    ang_b = math.atan2(b.y - center.y, b.x - center.x)
++    sweep = ang_b - ang_a
++    if distance > 0:
++        # CCW sweep for inflate.
++        while sweep <= 0:
++            sweep += 2.0 * math.pi
++    else:
++        # CW sweep for deflate.
++        while sweep >= 0:
++            sweep -= 2.0 * math.pi
++    abs_sweep = abs(sweep)
++    if abs_sweep < _EPS:
++        _push(out, b)
++        return
++    n_segments = max(1, int(math.ceil(abs_sweep / arc_segment_angle)))
++    step = sweep / n_segments
++    for k in range(1, n_segments):
++        ang = ang_a + step * k
++        px = center.x + radius * math.cos(ang)
++        py = center.y + radius * math.sin(ang)
++        _push(out, Vec2(px, py))
++    _push(out, b)
++
++
++def _line_line_intersection(
++    p1: Vec2, p2: Vec2, p3: Vec2, p4: Vec2
++) -> Vec2 | None:
++    """Return the intersection of the lines defined by ``p1 p2`` and
++    ``p3 p4``.
++
++    Returns ``None`` if the lines are parallel.
++    """
++    dx1 = p2.x - p1.x
++    dy1 = p2.y - p1.y
++    dx2 = p4.x - p3.x
++    dy2 = p4.y - p3.y
++    det = dx1 * dy2 - dy1 * dx2
++    if abs(det) < _EPS:
++        return None
++    rx = p3.x - p1.x
++    ry = p3.y - p1.y
++    t = (rx * dy2 - ry * dx2) / det
++    return Vec2(p1.x + dx1 * t, p1.y + dy1 * t)
++
++
++# ---------------------------------------------------------------------------
++# Self-intersection cleanup
++# ---------------------------------------------------------------------------
++
++
++def _extract_simple_loops(polyline: list[Vec2]) -> list[list[Vec2]]:
++    """Split a closed polyline into simple loops at self-intersections.
++
++    The polyline is implicitly closed (last vertex connects back to first).
++    The function performs an O(n^2) sweep over edge pairs to detect proper
++    crossings, splits the polyline at the crossing points, and then traces
++    simple sub-loops by always taking the most clockwise turn at each
++    crossing.
++    """
++    n = len(polyline)
++    if n < 3:
++        return []
++
++    pool: list[Vec2] = list(polyline)
++    seg_endpoints: list[tuple[int, int]] = [
++        (i, (i + 1) % n) for i in range(n)
++    ]
++
++    splits: list[list[tuple[float, int]]] = [[] for _ in range(n)]
++
++    for i in range(n):
++        a1 = pool[seg_endpoints[i][0]]
++        a2 = pool[seg_endpoints[i][1]]
++        for j in range(i + 1, n):
++            # Skip adjacent segments that share an endpoint.
++            if j == i + 1:
++                continue
++            if i == 0 and j == n - 1:
++                continue
++            b1 = pool[seg_endpoints[j][0]]
++            b2 = pool[seg_endpoints[j][1]]
++            ip = _segment_intersection(a1, a2, b1, b2)
++            if ip is None:
++                continue
++            t_ip, u_ip, point = ip
++            new_idx = len(pool)
++            pool.append(point)
++            splits[i].append((t_ip, new_idx))
++            splits[j].append((u_ip, new_idx))
++
++    # Build the expanded segment list with intersection vertices inserted.
++    segments: list[tuple[int, int]] = []
++    for i in range(n):
++        start_idx, end_idx = seg_endpoints[i]
++        if not splits[i]:
++            segments.append((start_idx, end_idx))
++            continue
++        ordered = sorted(splits[i], key=lambda x: x[0])
++        prev = start_idx
++        for _, idx in ordered:
++            if idx != prev:
++                segments.append((prev, idx))
++                prev = idx
++        if end_idx != prev:
++            segments.append((prev, end_idx))
++
++    return list(_trace_loops(pool, segments))
++
++
++def _segment_intersection(
++    a1: Vec2, a2: Vec2, b1: Vec2, b2: Vec2
++) -> tuple[float, float, Vec2] | None:
++    """Return ``(t, u, point)`` for a proper interior crossing or ``None``.
++
++    A crossing is reported only if both parametric coordinates are strictly
++    inside ``[eps, 1 - eps]``. Touchings at endpoints or collinear overlaps
++    are intentionally ignored.
++    """
++    dx1 = a2.x - a1.x
++    dy1 = a2.y - a1.y
++    dx2 = b2.x - b1.x
++    dy2 = b2.y - b1.y
++    det = dx1 * dy2 - dy1 * dx2
++    if abs(det) < _EPS:
++        return None
++    rx = b1.x - a1.x
++    ry = b1.y - a1.y
++    t = (rx * dy2 - ry * dx2) / det
++    u = (rx * dy1 - ry * dx1) / det
++    if t <= _EPS or t >= 1.0 - _EPS:
++        return None
++    if u <= _EPS or u >= 1.0 - _EPS:
++        return None
++    point = Vec2(a1.x + dx1 * t, a1.y + dy1 * t)
++    return t, u, point
++
++
++def _trace_loops(
++    pool: list[Vec2], segments: list[tuple[int, int]]
++) -> Iterator[list[Vec2]]:
++    """Trace simple loops by walking the directed segment graph.
++
++    The raw offset is a closed walk; each crossing inserts a degree four
++    vertex. Walking the segments in order and choosing the *most clockwise*
++    outgoing edge at each vertex yields the minimal simple loops
++    corresponding to faces of the planar arrangement.
++    """
++    n = len(segments)
++    if n == 0:
++        return
++
++    out_edges: dict[int, list[int]] = {}
++    for s_idx, (start, _) in enumerate(segments):
++        out_edges.setdefault(start, []).append(s_idx)
++
++    used = [False] * n
++
++    for start_seg in range(n):
++        if used[start_seg]:
++            continue
++        loop_segments: list[int] = []
++        current_seg = start_seg
++        max_steps = n * 4
++        steps = 0
++        while steps < max_steps:
++            if used[current_seg]:
++                break
++            used[current_seg] = True
++            loop_segments.append(current_seg)
++            _, end = segments[current_seg]
++            candidates = [s for s in out_edges.get(end, []) if not used[s]]
++            if not candidates:
++                break
++            in_start, in_end = segments[current_seg]
++            in_dir = Vec2(
++                pool[in_end].x - pool[in_start].x,
++                pool[in_end].y - pool[in_start].y,
++            )
++            best = None
++            best_angle = math.inf
++            for cand in candidates:
++                c_start, c_end = segments[cand]
++                out_dir = Vec2(
++                    pool[c_end].x - pool[c_start].x,
++                    pool[c_end].y - pool[c_start].y,
++                )
++                ang = _ccw_angle(Vec2(-in_dir.x, -in_dir.y), out_dir)
++                if ang < best_angle - _EPS:
++                    best_angle = ang
++                    best = cand
++            if best is None:
++                break
++            current_seg = best
++            steps += 1
++
++        if len(loop_segments) < 3:
++            continue
++        vertices: list[Vec2] = []
++        for s_idx in loop_segments:
++            start, _ = segments[s_idx]
++            v = pool[start]
++            if not vertices or not _isclose_v2(vertices[-1], v):
++                vertices.append(v)
++        while len(vertices) >= 2 and _isclose_v2(vertices[0], vertices[-1]):
++            vertices.pop()
++        if len(vertices) >= 3:
++            yield vertices
++
++
++def _ccw_angle(u: Vec2, v: Vec2) -> float:
++    """Return the CCW angle in ``(0, 2*pi]`` from vector ``u`` to ``v``."""
++    a = math.atan2(v.y, v.x) - math.atan2(u.y, u.x)
++    while a <= 0.0:
++        a += 2.0 * math.pi
++    while a > 2.0 * math.pi:
++        a -= 2.0 * math.pi
++    return a
++
++
++# ---------------------------------------------------------------------------
++# Geometric validation
++# ---------------------------------------------------------------------------
++
++
++def _is_loop_at_offset_distance(
++    loop: Sequence[Vec2],
++    original: Sequence[Vec2],
++    expected_min_distance: float,
++) -> bool:
++    """Return True if every vertex of ``loop`` is at distance >=
++    ``expected_min_distance`` from the boundary of ``original``.
++
++    Loops generated by over-deflation tend to coincide with portions of the
++    original boundary (distance ~0) and are filtered out by this check.
++    Loops that are produced by self-intersection cleanup typically have at
++    least one vertex very close to the original boundary as well.
++    """
++    if expected_min_distance <= 0.0:
++        return True
++    for v in loop:
++        d = _min_distance_to_polygon_boundary(v, original)
++        if d < expected_min_distance:
++            return False
++    return True
++
++
++def _min_distance_to_polygon_boundary(
++    point: Vec2, polygon: Sequence[Vec2]
++) -> float:
++    """Return the minimum distance from ``point`` to any edge of
++    ``polygon``."""
++    n = len(polygon)
++    best = math.inf
++    for i in range(n):
++        a = polygon[i]
++        b = polygon[(i + 1) % n]
++        d = _point_segment_distance(point, a, b)
++        if d < best:
++            best = d
++    return best
++
++
++def _point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> float:
++    """Return the distance from point ``p`` to the segment ``a b``."""
++    abx = b.x - a.x
++    aby = b.y - a.y
++    apx = p.x - a.x
++    apy = p.y - a.y
++    seg_len_sq = abx * abx + aby * aby
++    if seg_len_sq < _EPS * _EPS:
++        return math.hypot(apx, apy)
++    t = (apx * abx + apy * aby) / seg_len_sq
++    if t < 0.0:
++        t = 0.0
++    elif t > 1.0:
++        t = 1.0
++    cx = a.x + abx * t
++    cy = a.y + aby * t
++    return math.hypot(p.x - cx, p.y - cy)
+diff --git a/src/ezdxf/math/offset2d.py b/src/ezdxf/math/offset2d.py
+index 306e4b4..5bc2f24 100644
+--- a/src/ezdxf/math/offset2d.py
++++ b/src/ezdxf/math/offset2d.py
+@@ -6,7 +6,38 @@ from ezdxf.math import Vec2, UVec
+ from ezdxf.math.line import ConstructionRay, ParallelRaysError
+ 
+ 
+-__all__ = ["offset_vertices_2d"]
++__all__ = ["offset_vertices_2d", "offset_closed_polygon_2d"]
++
++
++def offset_closed_polygon_2d(
++    vertices: Iterable[UVec], offset: float
++) -> list[Vec2]:
++    """Return the parallel offset of a *closed* simple polygon as a list of
++    :class:`Vec2` vertices.
++
++    Convenience wrapper around :func:`ezdxf.math.buffer.offset_polygon_2d`
++    using the default round join style and returning the first (and, for
++    inputs covered by this helper, only) resulting polygon. Returns an empty
++    list when the polygon is fully consumed by a deflation.
++
++    Args:
++        vertices: closed polygon as an iterable of vertices. The Z component
++            is ignored.
++        offset: signed offset distance. Positive inflates the polygon,
++            negative deflates it. ``0`` returns the input vertices.
++
++    """
++    # Local import to avoid a circular dependency between ``offset2d`` and
++    # ``buffer`` at module load time. ``buffer`` re-uses helpers from this
++    # module so the import is intentionally deferred.
++    from ezdxf.math.buffer import offset_polygon_2d, JoinStyle
++
++    polygons = offset_polygon_2d(
++        vertices, offset, join_style=JoinStyle.ROUND
++    )
++    if not polygons:
++        return []
++    return polygons[0]
+ 
+ 
+ def offset_vertices_2d(

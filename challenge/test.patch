@@ -1,0 +1,585 @@
+diff --git a/tests/test_06_math/test_667_polygon_buffer.py b/tests/test_06_math/test_667_polygon_buffer.py
+new file mode 100644
+index 0000000..6d439d5
+--- /dev/null
++++ b/tests/test_06_math/test_667_polygon_buffer.py
+@@ -0,0 +1,579 @@
++# Copyright (c) 2025, Manfred Moitzi
++# License: MIT License
++"""Tests for ezdxf.math.buffer.offset_polygon_2d."""
++from __future__ import annotations
++import math
++
++import pytest
++
++from ezdxf.math import Vec2
++from ezdxf.math.buffer import JoinStyle, offset_polygon_2d
++# The challenge also requires that the public symbols are re-exported from
++# ``ezdxf.math`` and that a convenience wrapper is exposed from
++# ``ezdxf.math.offset2d``.
++from ezdxf.math import (
++    offset_polygon_2d as _offset_polygon_2d_from_pkg,
++    JoinStyle as _JoinStyle_from_pkg,
++)
++from ezdxf.math.offset2d import offset_closed_polygon_2d
++
++
++def _signed_area(polygon) -> float:
++    n = len(polygon)
++    s = 0.0
++    for i in range(n):
++        a = polygon[i]
++        b = polygon[(i + 1) % n]
++        s += a.x * b.y - b.x * a.y
++    return 0.5 * s
++
++
++def _is_ccw(polygon) -> bool:
++    return _signed_area(polygon) > 0
++
++
++def _min_distance_to_polygon(point: Vec2, polygon) -> float:
++    n = len(polygon)
++    best = math.inf
++    for i in range(n):
++        a = polygon[i]
++        b = polygon[(i + 1) % n]
++        abx = b.x - a.x
++        aby = b.y - a.y
++        apx = point.x - a.x
++        apy = point.y - a.y
++        seg_len_sq = abx * abx + aby * aby
++        if seg_len_sq < 1e-30:
++            d = math.hypot(apx, apy)
++        else:
++            t = max(0.0, min(1.0, (apx * abx + apy * aby) / seg_len_sq))
++            cx = a.x + abx * t
++            cy = a.y + aby * t
++            d = math.hypot(point.x - cx, point.y - cy)
++        if d < best:
++            best = d
++    return best
++
++
++def _is_simple_polygon(polygon) -> bool:
++    """Return True if the polygon has no self-intersections."""
++    n = len(polygon)
++    if n < 3:
++        return False
++    for i in range(n):
++        a1 = polygon[i]
++        a2 = polygon[(i + 1) % n]
++        for j in range(i + 1, n):
++            if j == i + 1:
++                continue
++            if i == 0 and j == n - 1:
++                continue
++            b1 = polygon[j]
++            b2 = polygon[(j + 1) % n]
++            if _segments_cross(a1, a2, b1, b2):
++                return False
++    return True
++
++
++def _segments_cross(a1, a2, b1, b2) -> bool:
++    eps = 1e-9
++    dx1 = a2.x - a1.x
++    dy1 = a2.y - a1.y
++    dx2 = b2.x - b1.x
++    dy2 = b2.y - b1.y
++    det = dx1 * dy2 - dy1 * dx2
++    if abs(det) < eps:
++        return False
++    rx = b1.x - a1.x
++    ry = b1.y - a1.y
++    t = (rx * dy2 - ry * dx2) / det
++    u = (rx * dy1 - ry * dx1) / det
++    return eps < t < 1.0 - eps and eps < u < 1.0 - eps
++
++
++SQUARE = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]
++
++
++# ---------------------------------------------------------------------------
++# API basics
++# ---------------------------------------------------------------------------
++
++
++class TestApiBasics:
++    def test_returns_list_of_lists_of_vec2(self):
++        result = offset_polygon_2d(SQUARE, 1.0, join_style=JoinStyle.MITER, miter_limit=10)
++        assert isinstance(result, list)
++        assert isinstance(result[0], list)
++        for v in result[0]:
++            assert isinstance(v, Vec2)
++
++    def test_zero_distance_returns_input_unchanged(self):
++        result = offset_polygon_2d(SQUARE, 0.0)
++        assert len(result) == 1
++        poly = result[0]
++        assert len(poly) == 4
++        assert abs(_signed_area(poly) - 16.0) < 1e-9
++
++    def test_zero_distance_on_cw_input_returns_ccw(self):
++        cw = list(reversed(SQUARE))
++        result = offset_polygon_2d(cw, 0.0)
++        assert len(result) == 1
++        assert _is_ccw(result[0])
++
++    def test_invalid_miter_limit_raises(self):
++        with pytest.raises(ValueError):
++            offset_polygon_2d(SQUARE, 1.0, miter_limit=0.5)
++
++    def test_invalid_arc_segment_angle_raises(self):
++        with pytest.raises(ValueError):
++            offset_polygon_2d(SQUARE, 1.0, arc_segment_angle=0.0)
++
++    def test_empty_input_returns_empty(self):
++        assert offset_polygon_2d([], 1.0) == []
++
++    def test_single_vertex_returns_empty(self):
++        assert offset_polygon_2d([(0, 0)], 1.0) == []
++
++    def test_two_vertex_input_returns_empty(self):
++        assert offset_polygon_2d([(0, 0), (1, 1)], 1.0) == []
++
++    def test_closed_input_with_duplicate_first_last(self):
++        closed = list(SQUARE) + [SQUARE[0]]
++        result = offset_polygon_2d(closed, 1.0, join_style=JoinStyle.MITER, miter_limit=10)
++        assert len(result) == 1
++        assert abs(_signed_area(result[0]) - 36.0) < 1e-9
++
++    def test_consecutive_duplicates_filtered(self):
++        polygon = [(0, 0), (0, 0), (4, 0), (4, 0), (4, 4), (0, 4)]
++        result = offset_polygon_2d(polygon, 1.0, join_style=JoinStyle.MITER, miter_limit=10)
++        assert len(result) == 1
++        assert abs(_signed_area(result[0]) - 36.0) < 1e-9
++
++
++class TestPublicReExports:
++    """The buffer API must be importable from ezdxf.math and a convenience
++    wrapper must be exposed from ezdxf.math.offset2d."""
++
++    def test_symbols_reexported_from_math_package(self):
++        # Same callable / class objects on both import paths.
++        assert _offset_polygon_2d_from_pkg is offset_polygon_2d
++        assert _JoinStyle_from_pkg is JoinStyle
++
++    def test_reexported_function_works(self):
++        result = _offset_polygon_2d_from_pkg(
++            SQUARE, 1.0, join_style=_JoinStyle_from_pkg.MITER, miter_limit=10
++        )
++        assert len(result) == 1
++        assert abs(_signed_area(result[0]) - 36.0) < 1e-9
++
++    def test_offset_closed_polygon_2d_inflate(self):
++        # The wrapper returns a single list of Vec2 (not a list of polygons)
++        # and uses the round join style by default.
++        out = offset_closed_polygon_2d(SQUARE, 1.0)
++        assert isinstance(out, list)
++        assert len(out) > 4  # round join adds vertices on each corner
++        for v in out:
++            assert isinstance(v, Vec2)
++
++    def test_offset_closed_polygon_2d_zero_distance(self):
++        out = offset_closed_polygon_2d(SQUARE, 0.0)
++        assert len(out) == 4
++        assert abs(_signed_area(out) - 16.0) < 1e-9
++
++    def test_offset_closed_polygon_2d_consumed_returns_empty(self):
++        # A 2x2 square has inradius 1; deflating by 2 must yield no polygon.
++        out = offset_closed_polygon_2d([(0, 0), (2, 0), (2, 2), (0, 2)], -2.0)
++        assert out == []
++
++
++# ---------------------------------------------------------------------------
++# Inflate (positive distance) on convex polygons
++# ---------------------------------------------------------------------------
++
++
++class TestInflateConvex:
++    def test_square_miter(self):
++        result = offset_polygon_2d(
++            SQUARE, 1.0, join_style=JoinStyle.MITER, miter_limit=10.0
++        )
++        assert len(result) == 1
++        poly = result[0]
++        # Inflated square is 6x6 -> area 36
++        assert abs(_signed_area(poly) - 36.0) < 1e-9
++        assert _is_ccw(poly)
++        assert _is_simple_polygon(poly)
++
++    def test_square_bevel(self):
++        result = offset_polygon_2d(
++            SQUARE, 1.0, join_style=JoinStyle.BEVEL
++        )
++        assert len(result) == 1
++        poly = result[0]
++        # Each corner replaced by a chord of length sqrt(2). Area:
++        # original square 16 + 4 strips of 4*1=16 + 4 corner triangles 0.5*1*1
++        # = 16 + 16 + 2 = 34
++        assert abs(_signed_area(poly) - 34.0) < 1e-9
++        assert _is_ccw(poly)
++        assert _is_simple_polygon(poly)
++
++    def test_square_round_area_converges(self):
++        # Outer area of an inflated convex polygon with full round joins is
++        # exactly: original_area + perimeter * d + pi * d^2.
++        # Check that the area converges to this analytical value as the
++        # arc_segment_angle is reduced.
++        d = 1.0
++        coarse = offset_polygon_2d(
++            SQUARE, d, join_style=JoinStyle.ROUND, arc_segment_angle=math.pi / 8
++        )
++        fine = offset_polygon_2d(
++            SQUARE, d, join_style=JoinStyle.ROUND, arc_segment_angle=math.pi / 64
++        )
++        analytical = 16.0 + 16.0 * d + math.pi * d * d
++        coarse_err = abs(_signed_area(coarse[0]) - analytical)
++        fine_err = abs(_signed_area(fine[0]) - analytical)
++        # Fine must be strictly closer than coarse and within 0.5%.
++        assert fine_err < coarse_err
++        assert fine_err / analytical < 0.005
++
++    def test_round_join_emits_more_vertices_than_bevel(self):
++        bevel = offset_polygon_2d(
++            SQUARE, 1.0, join_style=JoinStyle.BEVEL
++        )[0]
++        round_ = offset_polygon_2d(
++            SQUARE, 1.0, join_style=JoinStyle.ROUND, arc_segment_angle=math.pi / 16
++        )[0]
++        miter = offset_polygon_2d(
++            SQUARE, 1.0, join_style=JoinStyle.MITER, miter_limit=10
++        )[0]
++        assert len(round_) > len(bevel)
++        # Miter on a square reduces to the original 4 vertices.
++        assert len(miter) == 4
++
++    def test_inflate_contains_original(self):
++        # Every input vertex must lie inside or on the inflated polygon
++        # boundary, at distance no greater than d from it.
++        d = 0.7
++        result = offset_polygon_2d(
++            SQUARE, d, join_style=JoinStyle.ROUND
++        )[0]
++        for v in [Vec2(p) for p in SQUARE]:
++            dist = _min_distance_to_polygon(v, result)
++            assert dist <= d + 1e-6
++            assert dist >= d - 0.05  # close to d but allow for round chord
++
++    def test_double_inflate_square_miter(self):
++        # Inflating twice by 1 with MITER should equal inflating once by 2.
++        once = offset_polygon_2d(
++            SQUARE, 2.0, join_style=JoinStyle.MITER, miter_limit=10
++        )[0]
++        twice = offset_polygon_2d(
++            offset_polygon_2d(
++                SQUARE, 1.0, join_style=JoinStyle.MITER, miter_limit=10
++            )[0],
++            1.0,
++            join_style=JoinStyle.MITER,
++            miter_limit=10,
++        )[0]
++        assert abs(_signed_area(once) - _signed_area(twice)) < 1e-6
++        assert abs(_signed_area(once) - 64.0) < 1e-6
++
++    def test_triangle_miter(self):
++        # Equilateral triangle, side length s -> area = s^2 * sqrt(3) / 4
++        # Inflating with MITER preserves the corner topology, so the result
++        # is a similar triangle with offset corners.
++        s = 2.0
++        h = s * math.sqrt(3.0) / 2.0
++        triangle = [(0.0, 0.0), (s, 0.0), (s / 2.0, h)]
++        d = 0.5
++        result = offset_polygon_2d(
++            triangle, d, join_style=JoinStyle.MITER, miter_limit=10
++        )
++        assert len(result) == 1
++        poly = result[0]
++        assert len(poly) == 3
++        # Analytical inflated area: A + p*d + pi*d^2 (for round joins). With
++        # miter the corner region is the *complement* of the round arc
++        # within the angle bisector cone, so it is larger. Compute it
++        # explicitly for the equilateral triangle: each miter triangle has
++        # area (d^2 / tan(theta/2)) where theta is the interior angle = 60
++        # degrees, so area per corner = d^2 / tan(30) = d^2 * sqrt(3).
++        a_orig = (s * s) * math.sqrt(3.0) / 4.0
++        perim = 3.0 * s
++        miter_per_corner = d * d * math.sqrt(3.0)
++        expected = a_orig + perim * d + 3.0 * miter_per_corner
++        assert abs(_signed_area(poly) - expected) < 1e-6
++
++
++# ---------------------------------------------------------------------------
++# Inflate on concave polygons
++# ---------------------------------------------------------------------------
++
++
++class TestInflateConcave:
++    L_SHAPE = [
++        (0.0, 0.0), (4.0, 0.0), (4.0, 2.0),
++        (2.0, 2.0), (2.0, 4.0), (0.0, 4.0),
++    ]
++
++    def test_l_shape_inflate_miter(self):
++        result = offset_polygon_2d(
++            self.L_SHAPE, 0.5, join_style=JoinStyle.MITER, miter_limit=10
++        )
++        assert len(result) == 1
++        poly = result[0]
++        # Original L area = 12. Each side moves out by 0.5.
++        # Convex corners: 5 of them, 90 deg => each adds d^2 to area (miter
++        # square). Concave corner: 1 of them, removes d^2 (intersection
++        # cuts in).
++        # Perimeter: 4+2+2+2+2+4 = 16. Area = 12 + 16*0.5 + 5*0.25 - 1*0.25
++        # = 12 + 8 + 1.25 - 0.25 = 21.0
++        assert abs(_signed_area(poly) - 21.0) < 1e-9
++        assert _is_ccw(poly)
++        assert _is_simple_polygon(poly)
++
++    def test_l_shape_inflate_round(self):
++        result = offset_polygon_2d(
++            self.L_SHAPE, 0.3, join_style=JoinStyle.ROUND,
++            arc_segment_angle=math.pi / 32,
++        )
++        assert len(result) == 1
++        poly = result[0]
++        # Round joins on convex corners contribute pi * d^2 across all
++        # convex corners (5 of them, totaling 5*90 = 450 deg = 2.5 pi).
++        # The concave corner removes a square area of d^2.
++        d = 0.3
++        a_orig = 12.0
++        perim = 4 + 2 + 2 + 2 + 2 + 4
++        # 5 convex 90-deg corners contribute 5/4 of full circle = 5*pi*d^2/4
++        convex_area = 5 * math.pi * d * d / 4
++        concave_area = -d * d  # square cut out at concave corner
++        expected = a_orig + perim * d + convex_area + concave_area
++        assert abs(_signed_area(poly) - expected) < 0.01
++        assert _is_simple_polygon(poly)
++
++    def test_concave_inflate_preserves_inside(self):
++        # Every input vertex must lie strictly inside the inflated polygon.
++        result = offset_polygon_2d(
++            self.L_SHAPE, 0.3, join_style=JoinStyle.MITER, miter_limit=10
++        )
++        poly = result[0]
++        for v in [Vec2(p) for p in self.L_SHAPE]:
++            assert _min_distance_to_polygon(v, poly) >= 0.3 - 1e-6
++
++
++# ---------------------------------------------------------------------------
++# Deflate (negative distance)
++# ---------------------------------------------------------------------------
++
++
++class TestDeflate:
++    def test_square_deflate(self):
++        # A 4x4 square deflated by 1 should produce a 2x2 inner square.
++        result = offset_polygon_2d(
++            SQUARE, -1.0, join_style=JoinStyle.MITER, miter_limit=10
++        )
++        assert len(result) == 1
++        poly = result[0]
++        assert len(poly) == 4
++        assert abs(_signed_area(poly) - 4.0) < 1e-9
++        assert _is_ccw(poly)
++        assert _is_simple_polygon(poly)
++        # All vertices should lie inside the original square at distance 1.
++        for v in poly:
++            assert _min_distance_to_polygon(v, [Vec2(p) for p in SQUARE]) >= 1.0 - 1e-6
++
++    def test_square_deflate_below_inradius_returns_empty(self):
++        # The inradius of a 2x2 square is 1.
++        unit = [(0, 0), (2, 0), (2, 2), (0, 2)]
++        assert offset_polygon_2d(unit, -1.0) == []
++        assert offset_polygon_2d(unit, -1.5) == []
++        assert offset_polygon_2d(unit, -2.0) == []
++
++    def test_triangle_deflate_below_inradius_returns_empty(self):
++        # Equilateral triangle with side 2 has inradius = 1/sqrt(3) ~= 0.577.
++        s = 2.0
++        triangle = [(0.0, 0.0), (s, 0.0), (s / 2, s * math.sqrt(3) / 2)]
++        assert offset_polygon_2d(triangle, -0.6) == []
++        assert offset_polygon_2d(triangle, -1.0) == []
++
++    def test_triangle_deflate_within_inradius(self):
++        s = 6.0
++        triangle = [(0.0, 0.0), (s, 0.0), (s / 2, s * math.sqrt(3) / 2)]
++        result = offset_polygon_2d(
++            triangle, -0.5, join_style=JoinStyle.MITER, miter_limit=10
++        )
++        assert len(result) == 1
++        poly = result[0]
++        assert len(poly) == 3
++        assert _is_ccw(poly)
++
++    def test_l_shape_deflate(self):
++        l_shape = [
++            (0.0, 0.0), (4.0, 0.0), (4.0, 2.0),
++            (2.0, 2.0), (2.0, 4.0), (0.0, 4.0),
++        ]
++        result = offset_polygon_2d(
++            l_shape, -0.5, join_style=JoinStyle.MITER, miter_limit=10
++        )
++        assert len(result) == 1
++        poly = result[0]
++        assert len(poly) == 6
++        # Deflated L:
++        # Horizontal arm (3x1) area 3, vertical arm (1x3) area 3, overlap 1.
++        # Total = 5.
++        assert abs(_signed_area(poly) - 5.0) < 1e-9
++        assert _is_ccw(poly)
++        assert _is_simple_polygon(poly)
++
++
++# ---------------------------------------------------------------------------
++# Orientation handling
++# ---------------------------------------------------------------------------
++
++
++class TestOrientation:
++    def test_cw_input_inflate_returns_ccw(self):
++        cw = list(reversed(SQUARE))
++        result = offset_polygon_2d(
++            cw, 1.0, join_style=JoinStyle.MITER, miter_limit=10
++        )
++        assert len(result) == 1
++        assert _is_ccw(result[0])
++        # Same area as CCW input (symmetric operation).
++        assert abs(_signed_area(result[0]) - 36.0) < 1e-9
++
++    def test_cw_input_deflate_returns_ccw(self):
++        cw = list(reversed(SQUARE))
++        result = offset_polygon_2d(
++            cw, -1.0, join_style=JoinStyle.MITER, miter_limit=10
++        )
++        assert len(result) == 1
++        assert _is_ccw(result[0])
++        assert abs(_signed_area(result[0]) - 4.0) < 1e-9
++
++
++# ---------------------------------------------------------------------------
++# Miter limit behaviour
++# ---------------------------------------------------------------------------
++
++
++class TestMiterLimit:
++    def test_acute_corner_falls_back_to_bevel_when_limit_low(self):
++        # A very acute "spike" triangle. Inflating with a low miter limit
++        # should produce a bevel chord at the spike instead of a long
++        # outward miter.
++        spike = [(0.0, 0.0), (10.0, 0.5), (0.0, 1.0)]
++        d = 0.3
++        with_low_limit = offset_polygon_2d(
++            spike, d, join_style=JoinStyle.MITER, miter_limit=1.5
++        )[0]
++        with_high_limit = offset_polygon_2d(
++            spike, d, join_style=JoinStyle.MITER, miter_limit=100
++        )[0]
++        # The high-limit version should have at most as many vertices as
++        # the input (3) - it is a single sharp triangle.
++        assert len(with_high_limit) == 3
++        # The bevel fallback must add a vertex at the spike.
++        assert len(with_low_limit) > 3
++        # And the high-limit area should be strictly larger because the
++        # miter point pokes out further than the bevel chord.
++        assert _signed_area(with_high_limit) > _signed_area(with_low_limit)
++
++    def test_default_miter_limit_falls_back_for_acute_corner(self):
++        # The default miter limit is 2.0. A 30 degree corner has a miter
++        # length > 2 * d and must fall back to a bevel.
++        s = math.tan(math.radians(15))  # 30 deg corner -> half angle 15
++        spike = [(0.0, 0.0), (1.0, s), (0.0, 2 * s)]
++        result = offset_polygon_2d(
++            spike, 0.1, join_style=JoinStyle.MITER, miter_limit=2.0
++        )
++        assert len(result) == 1
++        # The fallback adds a bevel at the spike: more than 3 vertices.
++        assert len(result[0]) > 3
++
++
++# ---------------------------------------------------------------------------
++# Round join smoothness
++# ---------------------------------------------------------------------------
++
++
++class TestRoundJoin:
++    def test_smaller_arc_segment_angle_more_vertices(self):
++        coarse = offset_polygon_2d(
++            SQUARE, 1.0, join_style=JoinStyle.ROUND,
++            arc_segment_angle=math.pi / 4,
++        )[0]
++        fine = offset_polygon_2d(
++            SQUARE, 1.0, join_style=JoinStyle.ROUND,
++            arc_segment_angle=math.pi / 32,
++        )[0]
++        assert len(fine) > len(coarse)
++
++    def test_round_inflate_vertices_equidistant_from_input(self):
++        # Every output vertex of a round-inflated convex polygon must be at
++        # distance d from the input boundary (within tolerance).
++        d = 0.7
++        result = offset_polygon_2d(
++            SQUARE, d, join_style=JoinStyle.ROUND,
++            arc_segment_angle=math.pi / 24,
++        )[0]
++        for v in result:
++            dist = _min_distance_to_polygon(v, [Vec2(p) for p in SQUARE])
++            assert abs(dist - d) < 1e-6
++
++    def test_round_join_arc_direction_inflate(self):
++        # For a CCW square inflated with ROUND, the corner arcs must be
++        # CCW: vertices on each arc have monotonically increasing angle
++        # around the corresponding input vertex.
++        result = offset_polygon_2d(
++            SQUARE, 1.0, join_style=JoinStyle.ROUND,
++            arc_segment_angle=math.pi / 16,
++        )[0]
++        # Group output vertices by which input vertex is closest within d.
++        # Each input vertex should "see" multiple output vertices on its
++        # circle.
++        for corner in [Vec2(p) for p in SQUARE]:
++            arc_pts = [
++                v for v in result
++                if abs(corner.distance(v) - 1.0) < 1e-6
++            ]
++            assert len(arc_pts) >= 3
++
++
++# ---------------------------------------------------------------------------
++# Numerical stability
++# ---------------------------------------------------------------------------
++
++
++class TestNumericalStability:
++    def test_translation_invariance(self):
++        # Translating the input must produce a translated output.
++        d = 0.5
++        original = offset_polygon_2d(
++            SQUARE, d, join_style=JoinStyle.MITER, miter_limit=10
++        )[0]
++        offset_in = [(p[0] + 1000.0, p[1] + 1000.0) for p in SQUARE]
++        translated = offset_polygon_2d(
++            offset_in, d, join_style=JoinStyle.MITER, miter_limit=10
++        )[0]
++        assert len(original) == len(translated)
++        for a, b in zip(original, translated):
++            assert abs((a.x + 1000.0) - b.x) < 1e-6
++            assert abs((a.y + 1000.0) - b.y) < 1e-6
++
++    def test_scaling_invariance(self):
++        # Scaling the input by k and the offset by k produces a scaled
++        # output.
++        k = 100.0
++        d = 0.5
++        original = offset_polygon_2d(
++            SQUARE, d, join_style=JoinStyle.MITER, miter_limit=10
++        )[0]
++        scaled_in = [(p[0] * k, p[1] * k) for p in SQUARE]
++        scaled = offset_polygon_2d(
++            scaled_in, d * k, join_style=JoinStyle.MITER, miter_limit=10
++        )[0]
++        assert len(original) == len(scaled)
++        for a, b in zip(original, scaled):
++            assert abs(a.x * k - b.x) < 1e-3
++            assert abs(a.y * k - b.y) < 1e-3
