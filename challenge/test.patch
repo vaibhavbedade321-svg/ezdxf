@@ -56,10 +56,10 @@ index 0000000..cc02111
 +esac
 diff --git a/tests/test_06_math/test_667_polygon_buffer.py b/tests/test_06_math/test_667_polygon_buffer.py
 new file mode 100644
-index 0000000..ba9be8d
+index 0000000..3401ee7
 --- /dev/null
 +++ b/tests/test_06_math/test_667_polygon_buffer.py
-@@ -0,0 +1,511 @@
+@@ -0,0 +1,541 @@
 +# Copyright (c) 2025, Manfred Moitzi
 +# License: MIT License
 +"""Tests for ezdxf.math.buffer.offset_polygon_2d."""
@@ -252,6 +252,20 @@ index 0000000..ba9be8d
 +    def test_offset_closed_polygon_2d_consumed_returns_empty(self):
 +        out = offset_closed_polygon_2d([(0, 0), (2, 0), (2, 2), (0, 2)], -2.0)
 +        assert out == []
++
++    def test_offset_closed_polygon_2d_matches_round_first_polygon(self):
++        # The wrapper is specified to return the first polygon produced by
++        # offset_polygon_2d using the round join style; for an input that
++        # yields a single polygon the wrapper output must equal that
++        # polygon vertex-for-vertex.
++        wrapper_out = offset_closed_polygon_2d(SQUARE, 0.7)
++        full_out = offset_polygon_2d(SQUARE, 0.7, join_style=JoinStyle.ROUND)
++        assert len(full_out) == 1
++        expected = full_out[0]
++        assert len(wrapper_out) == len(expected)
++        for a, b in zip(wrapper_out, expected):
++            assert abs(a.x - b.x) < 1e-12
++            assert abs(a.y - b.y) < 1e-12
 +
 +
 +class TestInflateConvex:
@@ -483,6 +497,22 @@ index 0000000..ba9be8d
 +        )
 +        assert len(result) == 1
 +        assert len(result[0]) > 3
++
++    def test_miter_fallback_matches_bevel_endpoints(self):
++        # A 90 deg corner has miter length sqrt(2) * abs(distance), so a
++        # miter_limit of 1.4 forces every corner of a square to fall back
++        # to bevel. The fallback must emit exactly the same two endpoints
++        # as a plain BEVEL join, so the two outputs are identical.
++        miter_fallback = offset_polygon_2d(
++            SQUARE, 1.0, join_style=JoinStyle.MITER, miter_limit=1.4
++        )[0]
++        bevel = offset_polygon_2d(
++            SQUARE, 1.0, join_style=JoinStyle.BEVEL
++        )[0]
++        assert len(miter_fallback) == len(bevel)
++        for a, b in zip(miter_fallback, bevel):
++            assert abs(a.x - b.x) < 1e-12
++            assert abs(a.y - b.y) < 1e-12
 +
 +
 +class TestRoundJoin:
