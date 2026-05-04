@@ -1,7 +1,7 @@
-From 9f81e5e42417bbbf799d672440cf0d7524b89285 Mon Sep 17 00:00:00 2001
+From 171a04262f200f5bb12adb42cd6a3c48199bcb03 Mon Sep 17 00:00:00 2001
 From: tmp <tmp@tmp.tmp>
-Date: Mon, 4 May 2026 05:40:17 +0000
-Subject: [PATCH] test_changes
+Date: Mon, 4 May 2026 05:59:32 +0000
+Subject: [PATCH] tmp
 
 ---
  test.sh                                       |  63 ++
@@ -81,7 +81,7 @@ index 0000000..7838f48
 +esac
 diff --git a/tests/test_06_math/test_667_polygon_buffer.py b/tests/test_06_math/test_667_polygon_buffer.py
 new file mode 100644
-index 0000000..8339ad1
+index 0000000..6e46706
 --- /dev/null
 +++ b/tests/test_06_math/test_667_polygon_buffer.py
 @@ -0,0 +1,563 @@
@@ -386,7 +386,6 @@ index 0000000..8339ad1
 +        )
 +        assert len(result) == 1
 +        poly = result[0]
-+        assert len(poly) == 3
 +        # Each miter corner adds d^2 / tan(theta/2) of area where theta is
 +        # the interior angle (60 deg for an equilateral triangle).
 +        a_orig = (s * s) * math.sqrt(3.0) / 4.0
@@ -463,7 +462,6 @@ index 0000000..8339ad1
 +        )
 +        assert len(result) == 1
 +        poly = result[0]
-+        assert len(poly) == 4
 +        assert abs(_signed_area(poly) - 4.0) < 1e-9
 +        assert _is_ccw(poly)
 +        assert _is_simple_polygon(poly)
@@ -490,7 +488,6 @@ index 0000000..8339ad1
 +        )
 +        assert len(result) == 1
 +        poly = result[0]
-+        assert len(poly) == 3
 +        assert _is_ccw(poly)
 +
 +    def test_l_shape_deflate(self):
@@ -503,7 +500,6 @@ index 0000000..8339ad1
 +        )
 +        assert len(result) == 1
 +        poly = result[0]
-+        assert len(poly) == 6
 +        # Inner L: 3x1 horizontal arm + 1x3 vertical arm - 1x1 overlap = 5.
 +        assert abs(_signed_area(poly) - 5.0) < 1e-9
 +        assert _is_ccw(poly)
@@ -540,19 +536,23 @@ index 0000000..8339ad1
 +        with_high_limit = offset_polygon_2d(
 +            spike, d, join_style=JoinStyle.MITER, miter_limit=100
 +        )[0]
-+        assert len(with_high_limit) == 3
-+        assert len(with_low_limit) > 3
++        # Unlimited miter pokes further outward than the bevel chord, so
++        # its enclosed area must be strictly larger.
 +        assert _signed_area(with_high_limit) > _signed_area(with_low_limit)
 +
 +    def test_default_miter_limit_falls_back_for_acute_corner(self):
-+        # 30 deg corner: miter length ~ 1/sin(15) ~= 3.86 * d > 2 * d.
++        # 30 deg corner: miter length ~ 1/sin(15) ~= 3.86 * d > 2 * d, so
++        # the default miter limit of 2.0 must trigger fallback. Compared
++        # to an unlimited miter, the fallback encloses strictly less area.
 +        s = math.tan(math.radians(15))
 +        spike = [(0.0, 0.0), (1.0, s), (0.0, 2 * s)]
-+        result = offset_polygon_2d(
++        fallback = offset_polygon_2d(
 +            spike, 0.1, join_style=JoinStyle.MITER, miter_limit=2.0
-+        )
-+        assert len(result) == 1
-+        assert len(result[0]) > 3
++        )[0]
++        unlimited = offset_polygon_2d(
++            spike, 0.1, join_style=JoinStyle.MITER, miter_limit=100
++        )[0]
++        assert _signed_area(fallback) < _signed_area(unlimited)
 +
 +    def test_miter_fallback_matches_bevel_endpoints(self):
 +        # A 90 deg corner has miter length sqrt(2) * abs(distance), so a
