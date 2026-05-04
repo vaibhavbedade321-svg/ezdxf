@@ -1,8 +1,6 @@
 ezdxf 2D Polygon Buffer
 
-The ezdxf offset_vertices_2d helper cannot produce rounded or mitered
-corners, bound miter spikes on acute corners, or handle inward offsets
-that exceed the polygon's local thickness. Add a robust polygon
+Add a robust polygon
 buffering operation for CAD style inflate and deflate workflows.
 
 Add a new module ezdxf.math.buffer exposing a JoinStyle enum with
