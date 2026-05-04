@@ -1,15 +1,3 @@
-From 171a04262f200f5bb12adb42cd6a3c48199bcb03 Mon Sep 17 00:00:00 2001
-From: tmp <tmp@tmp.tmp>
-Date: Mon, 4 May 2026 05:59:32 +0000
-Subject: [PATCH] tmp
-
----
- src/ezdxf/math/__init__.py |   1 +
- src/ezdxf/math/buffer.py   | 502 +++++++++++++++++++++++++++++++++++++
- src/ezdxf/math/offset2d.py |  25 +-
- 3 files changed, 527 insertions(+), 1 deletion(-)
- create mode 100644 src/ezdxf/math/buffer.py
-
 diff --git a/src/ezdxf/math/__init__.py b/src/ezdxf/math/__init__.py
 index 062fed9..e433593 100644
 --- a/src/ezdxf/math/__init__.py
@@ -570,6 +558,29 @@ index 306e4b4..c761d3a 100644
 +
 +    polygons = offset_polygon_2d(vertices, offset, join_style=JoinStyle.ROUND)
 +    return polygons[0] if polygons else []
--- 
-2.43.0
-
+diff --git a/src/ezdxf/select.py b/src/ezdxf/select.py
+index 91b47e7..56051f1 100644
+--- a/src/ezdxf/select.py
++++ b/src/ezdxf/select.py
+@@ -4,6 +4,7 @@ from __future__ import annotations
+ from typing import Iterable, Callable, Sequence
+ from typing_extensions import override
+ import abc
++import math
+ 
+ from ezdxf import bbox
+ from ezdxf.entities import DXFEntity
+@@ -164,6 +165,13 @@ class Polygon(SelectionShape):
+         # intersect the polygon
+         return self._has_intersection(entity_bbox.extmin, entity_bbox.extmax)
+ 
++    def buffered(self, distance: float, *, join_style=None, miter_limit: float = 2.0, arc_segment_angle: float = math.pi / 16.0) -> list["Polygon"]:
++        from ezdxf.math.buffer import offset_polygon_2d, JoinStyle
++        if join_style is None:
++            join_style = JoinStyle.ROUND
++        polygons = offset_polygon_2d(self._vertices, distance, join_style=join_style, miter_limit=miter_limit, arc_segment_angle=arc_segment_angle)
++        return [Polygon(p) for p in polygons]
++
+ 
+ def bbox_inside(
+     shape: SelectionShape,
