@@ -28,10 +28,12 @@ distance == 0 the function returns the normalised polygon (after
 deduplication and orientation reversal) as the single element of a
 one-element list.
 
-Each polygon in the return value is a list of distinct Vec2 instances
-in counter-clockwise orientation; the closing edge from the last to
-the first vertex is implicit. Inflating any non-degenerate polygon
-yields exactly one polygon. Deflating yields one polygon or none.
+Each polygon in the return value is a simple, non-self-intersecting
+closed polygon represented as a list of distinct Vec2 instances in
+counter-clockwise orientation; the closing edge from the last to the
+first vertex is implicit and the cyclic starting position is
+unspecified. Inflating any non-degenerate polygon yields exactly one
+polygon. Deflating yields one polygon or none.
 
 An inflated output strictly contains the input polygon. Every output
 vertex on a straight portion of the offset boundary lies at unsigned

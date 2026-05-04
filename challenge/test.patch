@@ -1,33 +1,46 @@
 diff --git a/test.sh b/test.sh
 new file mode 100755
-index 0000000..cc02111
+index 0000000..7838f48
 --- /dev/null
 +++ b/test.sh
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,63 @@
 +#!/usr/bin/env bash
 +# Olympus challenge runner for ezdxf polygon buffer.
 +#
-+# Usage:
-+#     ./test.sh --output_path <junit.xml> base   # existing regression tests
-+#     ./test.sh --output_path <junit.xml> new    # new buffer module tests
-+set -euo pipefail
++# Accepts the documented invocation as well as common variants:
++#     ./test.sh --output_path <junit.xml> base
++#     ./test.sh --output_path=<junit.xml> base
++#     ./test.sh --output-path <junit.xml> base
++#     ./test.sh base --output_path <junit.xml>
++#     ./test.sh base <junit.xml>
++#     ./test.sh <junit.xml> base
++set -eo pipefail
 +
 +OUTPUT_PATH=""
 +MODE=""
 +
 +while [[ $# -gt 0 ]]; do
 +    case "$1" in
-+        --output_path)
++        --output_path|--output-path)
 +            OUTPUT_PATH="$2"
 +            shift 2
++            ;;
++        --output_path=*|--output-path=*)
++            OUTPUT_PATH="${1#*=}"
++            shift
 +            ;;
 +        base|new)
 +            MODE="$1"
 +            shift
 +            ;;
 +        *)
-+            echo "unknown argument: $1" >&2
-+            exit 2
++            if [[ -z "$OUTPUT_PATH" ]]; then
++                OUTPUT_PATH="$1"
++            else
++                echo "unknown argument: $1" >&2
++                exit 2
++            fi
++            shift
 +            ;;
 +    esac
 +done
@@ -56,10 +69,10 @@ index 0000000..cc02111
 +esac
 diff --git a/tests/test_06_math/test_667_polygon_buffer.py b/tests/test_06_math/test_667_polygon_buffer.py
 new file mode 100644
-index 0000000..9f4017a
+index 0000000..8339ad1
 --- /dev/null
 +++ b/tests/test_06_math/test_667_polygon_buffer.py
-@@ -0,0 +1,562 @@
+@@ -0,0 +1,563 @@
 +# Copyright (c) 2025, Manfred Moitzi
 +# License: MIT License
 +"""Tests for ezdxf.math.buffer.offset_polygon_2d."""
@@ -533,7 +546,8 @@ index 0000000..9f4017a
 +        # A 90 deg corner has miter length sqrt(2) * abs(distance), so a
 +        # miter_limit of 1.4 forces every corner of a square to fall back
 +        # to bevel. The fallback must emit exactly the same two endpoints
-+        # as a plain BEVEL join, so the two outputs are identical.
++        # as a plain BEVEL join, so the two outputs describe the same set
++        # of vertices.
 +        miter_fallback = offset_polygon_2d(
 +            SQUARE, 1.0, join_style=JoinStyle.MITER, miter_limit=1.4
 +        )[0]
@@ -541,9 +555,9 @@ index 0000000..9f4017a
 +            SQUARE, 1.0, join_style=JoinStyle.BEVEL
 +        )[0]
 +        assert len(miter_fallback) == len(bevel)
-+        for a, b in zip(miter_fallback, bevel):
-+            assert abs(a.x - b.x) < 1e-9
-+            assert abs(a.y - b.y) < 1e-9
++        miter_pts = sorted((round(v.x, 9), round(v.y, 9)) for v in miter_fallback)
++        bevel_pts = sorted((round(v.x, 9), round(v.y, 9)) for v in bevel)
++        assert miter_pts == bevel_pts
 +
 +
 +class TestRoundJoin:
@@ -622,4 +636,3 @@ index 0000000..9f4017a
 +        for a, b in zip(original_scaled, scaled_pts):
 +            assert abs(a[0] - b[0]) < 1e-3
 +            assert abs(a[1] - b[1]) < 1e-3
-

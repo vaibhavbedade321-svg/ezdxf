@@ -519,15 +519,22 @@ index 0000000..d51b765
 +    cy = a.y + aby * t
 +    return math.hypot(p.x - cx, p.y - cy)
 diff --git a/src/ezdxf/math/offset2d.py b/src/ezdxf/math/offset2d.py
-index 306e4b4..9392da1 100644
+index 306e4b4..c761d3a 100644
 --- a/src/ezdxf/math/offset2d.py
 +++ b/src/ezdxf/math/offset2d.py
-@@ -6,7 +6,30 @@ from ezdxf.math import Vec2, UVec
+@@ -6,7 +6,7 @@ from ezdxf.math import Vec2, UVec
  from ezdxf.math.line import ConstructionRay, ParallelRaysError
  
  
 -__all__ = ["offset_vertices_2d"]
 +__all__ = ["offset_vertices_2d", "offset_closed_polygon_2d"]
+ 
+ 
+ def offset_vertices_2d(
+@@ -73,3 +73,26 @@ def offset_vertices_2d(
+     # last offset vertex = end point of last segment for open shapes
+     if not closed:
+         yield offset_segments[-1][1]
 +
 +
 +def offset_closed_polygon_2d(
@@ -551,6 +558,3 @@ index 306e4b4..9392da1 100644
 +
 +    polygons = offset_polygon_2d(vertices, offset, join_style=JoinStyle.ROUND)
 +    return polygons[0] if polygons else []
- 
- 
- def offset_vertices_2d(
