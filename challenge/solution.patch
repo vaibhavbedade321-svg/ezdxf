@@ -1,3 +1,15 @@
+From 9f81e5e42417bbbf799d672440cf0d7524b89285 Mon Sep 17 00:00:00 2001
+From: tmp <tmp@tmp.tmp>
+Date: Mon, 4 May 2026 05:40:17 +0000
+Subject: [PATCH] test_changes
+
+---
+ src/ezdxf/math/__init__.py |   1 +
+ src/ezdxf/math/buffer.py   | 502 +++++++++++++++++++++++++++++++++++++
+ src/ezdxf/math/offset2d.py |  25 +-
+ 3 files changed, 527 insertions(+), 1 deletion(-)
+ create mode 100644 src/ezdxf/math/buffer.py
+
 diff --git a/src/ezdxf/math/__init__.py b/src/ezdxf/math/__init__.py
 index 062fed9..e433593 100644
 --- a/src/ezdxf/math/__init__.py
@@ -558,3 +570,6 @@ index 306e4b4..c761d3a 100644
 +
 +    polygons = offset_polygon_2d(vertices, offset, join_style=JoinStyle.ROUND)
 +    return polygons[0] if polygons else []
+-- 
+2.43.0
+
