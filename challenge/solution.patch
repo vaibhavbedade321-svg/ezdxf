@@ -559,7 +559,7 @@ index 306e4b4..c761d3a 100644
 +    polygons = offset_polygon_2d(vertices, offset, join_style=JoinStyle.ROUND)
 +    return polygons[0] if polygons else []
 diff --git a/src/ezdxf/select.py b/src/ezdxf/select.py
-index 91b47e7..56051f1 100644
+index 91b47e7..683f6c0 100644
 --- a/src/ezdxf/select.py
 +++ b/src/ezdxf/select.py
 @@ -4,6 +4,7 @@ from __future__ import annotations
@@ -570,7 +570,20 @@ index 91b47e7..56051f1 100644
  
  from ezdxf import bbox
  from ezdxf.entities import DXFEntity
-@@ -164,6 +165,13 @@ class Polygon(SelectionShape):
+@@ -120,6 +121,12 @@ class Polygon(SelectionShape):
+         self._vertices: list[Vec2] = v
+         self._bbox = BoundingBox2d(self._vertices)
+ 
++    @property
++    def vertices(self) -> list[Vec2]:
++        """Read-only copy of the polygon's vertex list (CCW for normalised
++        boundaries) excluding the implicit closing vertex."""
++        return list(self._vertices)
++
+     def _has_intersection(self, extmin: Vec2, extmax: Vec2) -> bool:
+         cs = CohenSutherlandLineClipping2d(extmin, extmax)
+         vertices = self._vertices
+@@ -164,6 +171,13 @@ class Polygon(SelectionShape):
          # intersect the polygon
          return self._has_intersection(entity_bbox.extmin, entity_bbox.extmax)
  

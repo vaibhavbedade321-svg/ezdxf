@@ -69,7 +69,7 @@ index 0000000..7838f48
 +esac
 diff --git a/tests/test_06_math/test_667_polygon_buffer.py b/tests/test_06_math/test_667_polygon_buffer.py
 new file mode 100644
-index 0000000..986ff01
+index 0000000..56387c5
 --- /dev/null
 +++ b/tests/test_06_math/test_667_polygon_buffer.py
 @@ -0,0 +1,612 @@
@@ -652,7 +652,7 @@ index 0000000..986ff01
 +        from ezdxf.select import Polygon as SelectPolygon
 +        shape = SelectPolygon([(0, 0), (4, 0), (4, 4), (0, 4)])
 +        inflated = shape.buffered(1.0, join_style=JoinStyle.MITER, miter_limit=10)[0]
-+        bbox = BoundingBox2d(inflated._vertices)
++        bbox = BoundingBox2d(inflated.vertices)
 +        assert bbox.extmin.x < 0
 +        assert bbox.extmin.y < 0
 +        assert bbox.extmax.x > 4
@@ -663,7 +663,7 @@ index 0000000..986ff01
 +        shape = SelectPolygon([(0, 0), (4, 0), (4, 4), (0, 4)])
 +        deflated = shape.buffered(-1.0, join_style=JoinStyle.MITER, miter_limit=10)
 +        assert len(deflated) == 1
-+        inner_area = _signed_area(deflated[0]._vertices)
++        inner_area = _signed_area(deflated[0].vertices)
 +        assert abs(inner_area - 4.0) < 1e-9
 +
 +    def test_buffered_consumed_returns_empty_list(self):
@@ -676,7 +676,7 @@ index 0000000..986ff01
 +        shape = SelectPolygon([(0, 0), (4, 0), (4, 4), (0, 4)])
 +        result = shape.buffered(0.0)
 +        assert len(result) == 1
-+        verts = result[0]._vertices
++        verts = result[0].vertices
 +        assert _is_ccw(verts)
 +        assert abs(_signed_area(verts) - 16.0) < 1e-9
 +
@@ -684,4 +684,4 @@ index 0000000..986ff01
 +        from ezdxf.select import Polygon as SelectPolygon
 +        shape = SelectPolygon([(0, 0), (4, 0), (4, 4), (0, 4)])
 +        result = shape.buffered(1.0)
-+        assert len(result[0]._vertices) > 4
++        assert len(result[0].vertices) > 4

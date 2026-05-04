@@ -55,9 +55,9 @@ ValueError. Multi-component output for deflations that split a
 polygon at a narrow neck is out of scope.
 
 Wire the operation into entity selection: the existing Polygon class
-in ezdxf.select gains buffered(distance, *, join_style=None,
-miter_limit=2.0, arc_segment_angle=math.pi / 16.0) ->
-list[Polygon]. It returns one or more ezdxf.select.Polygon shapes
-whose boundaries come from offset_polygon_2d on this polygon's vertex
-list, defaulting to ROUND when join_style is None, and returns [] if
-the buffer does.
+in ezdxf.select gains a read-only vertices property returning the
+polygon's CCW vertex list, and buffered(distance, *, join_style=None,
+miter_limit=2.0, arc_segment_angle=math.pi / 16.0) -> list[Polygon]
+returning one or more Polygon shapes whose boundaries come from
+offset_polygon_2d on this polygon's vertices, defaulting to ROUND
+when join_style is None, and [] if the buffer does.
