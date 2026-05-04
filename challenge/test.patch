@@ -636,4 +636,3 @@ index 0000000..8339ad1
 +        for a, b in zip(original_scaled, scaled_pts):
 +            assert abs(a[0] - b[0]) < 1e-3
 +            assert abs(a[1] - b[1]) < 1e-3
--- 

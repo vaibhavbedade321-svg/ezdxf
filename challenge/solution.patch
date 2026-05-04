@@ -558,4 +558,3 @@ index 306e4b4..c761d3a 100644
 +
 +    polygons = offset_polygon_2d(vertices, offset, join_style=JoinStyle.ROUND)
 +    return polygons[0] if polygons else []
--- 
