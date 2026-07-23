@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..8876a67
+index 0000000..5a97d1e
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,588 @@
+@@ -0,0 +1,587 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -586,12 +586,11 @@ index 0000000..8876a67
 +
 +
 +def test_cli_semver_bump_rejects_malformed_version(tmp_path) -> None:
-+    # A malformed --bump version surfaces as a nonzero exit rather than printing
-+    # a bogus version or crashing silently.
++    # A malformed --bump version surfaces as a nonzero exit. Only the exit code
++    # is required by the spec; whether an error message is printed is left open.
 +    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
-+    exit_code, output = _run_semver(tmp_path, code, code, "--bump", "not-a-version")
-+    assert exit_code == 1
-+    assert output.strip() == ""
++    exit_code, _ = _run_semver(tmp_path, code, code, "--bump", "not-a-version")
++    assert exit_code != 0
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..73581df
