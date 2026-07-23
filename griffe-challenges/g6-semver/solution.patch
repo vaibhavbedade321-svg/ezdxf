@@ -1,5 +1,5 @@
 diff --git a/packages/griffecli/src/griffecli/_internal/cli.py b/packages/griffecli/src/griffecli/_internal/cli.py
-index 232c1e7..1f93b0e 100644
+index 232c1e7..13d3f00 100644
 --- a/packages/griffecli/src/griffecli/_internal/cli.py
 +++ b/packages/griffecli/src/griffecli/_internal/cli.py
 @@ -132,7 +132,7 @@ def get_parser() -> argparse.ArgumentParser:
@@ -11,7 +11,7 @@ index 232c1e7..1f93b0e 100644
  
      usage = "%(prog)s [GLOBAL_OPTS...] COMMAND [COMMAND_OPTS...]"
      description = "Signatures for entire Python programs. "
-@@ -326,9 +326,108 @@ def get_parser() -> argparse.ArgumentParser:
+@@ -326,9 +326,113 @@ def get_parser() -> argparse.ArgumentParser:
      check_options.add_argument("-f", "--format", dest="style", choices=formats, default=None, help="Output format.")
      add_common_options(check_parser)
  
@@ -93,7 +93,8 @@ index 232c1e7..1f93b0e 100644
 +            forwarded to the loader for both versions.
 +
 +    Returns:
-+        `0` always unless `fail_on` gates the exit code.
++        `0`, or `1` when `fail_on` gates the exit code or `--bump` is given a
++        malformed version.
 +    """
 +    import json  # noqa: PLC0415
 +
@@ -104,7 +105,11 @@ index 232c1e7..1f93b0e 100644
 +    report = bump_between(package, old_path, new_path, **load_options)
 +
 +    if current_version is not None:
-+        print(report.bump_version(current_version))
++        try:
++            print(report.bump_version(current_version))
++        except ValueError as error:
++            print(f"griffe: error: {error}", file=sys.stderr)
++            return 1
 +    elif as_json:
 +        print(json.dumps(report.as_dict(), cls=JSONEncoder))
 +    elif as_markdown:
@@ -120,7 +125,7 @@ index 232c1e7..1f93b0e 100644
  def dump(
      packages: Sequence[str],
      *,
-@@ -623,5 +722,5 @@ def main(args: list[str] | None = None) -> int:
+@@ -623,5 +727,5 @@ def main(args: list[str] | None = None) -> int:
      sys.setrecursionlimit(max(2000, sys.getrecursionlimit()))
  
      # Run subcommand.
@@ -194,10 +199,10 @@ index 17e346a..11fa729 100644
 +    """A signature gained an optional capability without breaking callers."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 0000000..fec6231
+index 0000000..2e5a77b
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,452 @@
 +# This module recommends a semantic version bump between two versions of a
 +# package. Breaking changes and removals force a major bump, additions and
 +# backward-compatible signature expansions a minor bump, and anything else a
@@ -424,12 +429,22 @@ index 0000000..fec6231
 +        }
 +
 +
-+def _iter_public(obj: Object, path: str) -> Iterator[tuple[str, Object]]:
++def _iter_public(
++    obj: Object,
++    path: str,
++    seen: set[str] | None = None,
++) -> Iterator[tuple[str, Object]]:
 +    """Yield `(path, object)` for every public object reachable from `obj`.
 +
 +    Aliases are followed to their targets; unresolved aliases are skipped so a
-+    broken re-export never aborts the whole walk.
++    broken re-export never aborts the whole walk. A re-exported class or module
++    is descended into under its exported path, so nested members behind a
++    re-export are compared under the name a caller actually sees. The `seen` set
++    of canonical target paths guards against alias cycles, which the plain
++    definition tree cannot contain but mutual re-exports can.
 +    """
++    if seen is None:
++        seen = set()
 +    for name, member in obj.members.items():
 +        if not member.is_public:
 +            continue
@@ -439,11 +454,12 @@ index 0000000..fec6231
 +                target = member.final_target  # ty:ignore[unresolved-attribute]
 +            except Exception:  # noqa: BLE001
 +                continue
-+            yield member_path, target
-+            continue
-+        yield member_path, member  # ty:ignore[invalid-yield]
-+        if member.is_module or member.is_class:
-+            yield from _iter_public(member, member_path)
++        else:
++            target = member
++        yield member_path, target  # ty:ignore[invalid-yield]
++        if (target.is_module or target.is_class) and target.path not in seen:
++            seen.add(target.path)
++            yield from _iter_public(target, member_path, seen)
 +
 +
 +def _relative(path: str) -> str:

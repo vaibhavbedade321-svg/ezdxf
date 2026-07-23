@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..6f5e3b8
+index 0000000..c95ad16
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,521 @@
+@@ -0,0 +1,588 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -171,6 +171,7 @@ index 0000000..6f5e3b8
 +    )
 +    text = report.explain()
 +    assert "\n" not in text
++    assert griffe.Bump.MINOR.value in text
 +    assert str(report) == text
 +
 +
@@ -250,13 +251,18 @@ index 0000000..6f5e3b8
 +
 +
 +def test_render_markdown_groups_changes() -> None:
++    # A report with two kinds present: the Markdown groups them under a heading
++    # per kind and lists every changed path.
 +    report = _bump(
-+        'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
-+        'def tool():\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++        'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        'def tool(a):\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
 +    )
 +    text = report.render_markdown()
-+    assert griffe.Bump.MINOR.value in text
++    assert griffe.Bump.MAJOR.value in text
++    assert griffe.ChangeKind.ADDED.value in text
++    assert griffe.ChangeKind.BREAKING.value in text
 +    assert "helper" in text
++    assert "tool" in text
 +
 +
 +def test_render_text_clean_when_no_changes() -> None:
@@ -334,6 +340,40 @@ index 0000000..6f5e3b8
 +    assert report.removals == []
 +
 +
++def test_reexported_class_member_addition_is_minor() -> None:
++    # A method added to a class exposed only through a re-export must be seen
++    # under the exported name: the walk descends into re-exported containers.
++    old = {
++        "__init__.py": 'from semold._impl import Tool\n__all__ = ["Tool"]\n',
++        "_impl.py": 'class Tool:\n    """Doc."""\n\n    def run(self):\n        """Doc."""\n',
++    }
++    new = {
++        "__init__.py": 'from semnew._impl import Tool\n__all__ = ["Tool"]\n',
++        "_impl.py": (
++            'class Tool:\n    """Doc."""\n\n'
++            '    def run(self):\n        """Doc."""\n\n'
++            '    def stop(self):\n        """Doc."""\n'
++        ),
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert "Tool.stop" in report.additions
++
++
++def test_reexported_module_member_removal_is_major() -> None:
++    old = {
++        "__init__.py": 'from semold import _sub as api\n__all__ = ["api"]\n',
++        "_sub.py": 'def a():\n    """Doc."""\n\ndef b():\n    """Doc."""\n',
++    }
++    new = {
++        "__init__.py": 'from semnew import _sub as api\n__all__ = ["api"]\n',
++        "_sub.py": 'def a():\n    """Doc."""\n',
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert "api.b" in report.removals
++
++
 +def test_changes_carry_nonempty_detail() -> None:
 +    old = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    new = (
@@ -363,6 +403,24 @@ index 0000000..6f5e3b8
 +    assert len(tool_breaks) >= 2
 +    keys = [(change.path, change.kind.value) for change in report.changes]
 +    assert keys == sorted(keys)
++
++
++def test_all_breaking_report_counts_and_serialization() -> None:
++    # A function losing two parameters yields several BREAKING changes on one
++    # path and nothing else, so counts holds only BREAKING, changes_of_kind for
++    # other kinds is empty, and as_dict preserves the duplicate BREAKING entries.
++    old = 'def tool(a, b, c):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert set(report.counts) == {"BREAKING"}
++    assert report.counts["BREAKING"] >= 2
++    assert report.changes_of_kind(griffe.ChangeKind.ADDED) == []
++    assert report.changes_of_kind(griffe.ChangeKind.REMOVED) == []
++    payload = report.as_dict()
++    breaking_entries = [c for c in payload["changes"] if c["kind"] == "breaking"]
++    assert len(breaking_entries) == report.counts["BREAKING"]
++    assert all(entry["path"] == "tool" for entry in breaking_entries)
 +
 +
 +def test_removed_object_not_double_counted() -> None:
@@ -525,6 +583,15 @@ index 0000000..6f5e3b8
 +    exit_code, output = _run_semver(tmp_path, code, code, "--no-inspection")
 +    assert exit_code == 0
 +    assert griffe.Bump.PATCH.value in output
++
++
++def test_cli_semver_bump_rejects_malformed_version(tmp_path) -> None:
++    # A malformed --bump version surfaces as a nonzero exit rather than printing
++    # a bogus version or crashing silently.
++    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    exit_code, output = _run_semver(tmp_path, code, code, "--bump", "not-a-version")
++    assert exit_code == 1
++    assert output.strip() == ""
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..73581df
