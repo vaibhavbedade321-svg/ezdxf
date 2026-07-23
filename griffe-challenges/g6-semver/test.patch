@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..23f1229
+index 0000000..b162c06
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,748 @@
+@@ -0,0 +1,744 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -309,29 +309,25 @@ index 0000000..23f1229
 +    assert report.additions == ["helper"]
 +
 +
-+def test_bump_between_forwards_load_options(tmp_path, monkeypatch) -> None:
-+    from griffe._internal import loader
++def test_bump_between_forwards_load_options(tmp_path) -> None:
++    class _Recorder(griffe.Extension):
++        def __init__(self) -> None:
++            self.seen = []
 +
-+    calls: list[dict] = []
-+    real_load = loader.load
-+
-+    def spy(*args, **kwargs):
-+        calls.append(kwargs)
-+        return real_load(*args, **kwargs)
-+
-+    monkeypatch.setattr(loader, "load", spy)
++        def on_package(self, *, pkg, **kwargs) -> None:
++            self.seen.append(str(pkg.filepath))
 +
 +    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    old_path = _write_version(tmp_path, "old", code)
 +    new_path = _write_version(tmp_path, "new", code)
++    recorder = _Recorder()
 +    report = griffe.bump_between(
-+        "semverpkg", old_path, new_path, allow_inspection=False
++        "semverpkg", old_path, new_path, extensions=griffe.load_extensions(recorder)
 +    )
 +    assert report.bump is griffe.Bump.PATCH
-+    assert len(calls) == 2
-+    assert all(call.get("allow_inspection") is False for call in calls)
-+    search_paths = {tuple(call.get("search_paths") or ()) for call in calls}
-+    assert search_paths == {(old_path,), (new_path,)}
++    assert len(recorder.seen) == 2
++    assert any(path.startswith(old_path) for path in recorder.seen)
++    assert any(path.startswith(new_path) for path in recorder.seen)
 +
 +
 +def test_reexport_tracks_the_exported_name(tmp_path) -> None:
