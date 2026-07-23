@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..b162c06
+index 0000000..e4d6e17
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,744 @@
+@@ -0,0 +1,752 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -606,6 +606,14 @@ index 0000000..b162c06
 +def test_cli_semver_bump_rejects_malformed_version(tmp_path) -> None:
 +    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    exit_code, _ = _run_semver(tmp_path, code, code, "--bump", "not-a-version")
++    assert exit_code != 0
++
++
++def test_cli_semver_rejects_unloadable_extension(tmp_path) -> None:
++    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    exit_code, _ = _run_semver(
++        tmp_path, code, code, "--extensions", "griffe_missing_extension_xyz"
++    )
 +    assert exit_code != 0
 +
 +

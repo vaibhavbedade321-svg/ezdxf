@@ -1,5 +1,5 @@
 diff --git a/packages/griffecli/src/griffecli/_internal/cli.py b/packages/griffecli/src/griffecli/_internal/cli.py
-index 232c1e7..cf1b41e 100644
+index 232c1e7..cd9b339 100644
 --- a/packages/griffecli/src/griffecli/_internal/cli.py
 +++ b/packages/griffecli/src/griffecli/_internal/cli.py
 @@ -132,7 +132,7 @@ def get_parser() -> argparse.ArgumentParser:
@@ -11,7 +11,7 @@ index 232c1e7..cf1b41e 100644
  
      usage = "%(prog)s [GLOBAL_OPTS...] COMMAND [COMMAND_OPTS...]"
      description = "Signatures for entire Python programs. "
-@@ -326,9 +326,123 @@ def get_parser() -> argparse.ArgumentParser:
+@@ -326,9 +326,145 @@ def get_parser() -> argparse.ArgumentParser:
      check_options.add_argument("-f", "--format", dest="style", choices=formats, default=None, help="Output format.")
      add_common_options(check_parser)
  
@@ -81,6 +81,7 @@ index 232c1e7..cf1b41e 100644
 +    current_version: str | None = None,
 +    fail_on: str | None = None,
 +    ignore: Sequence[str] = (),
++    extensions: Sequence[str | dict[str, Any] | Extension | type[Extension]] | None = None,
 +    search_paths: Sequence[str | Path] | None = None,
 +    append_sys_path: bool = False,
 +    **load_options: Any,
@@ -96,23 +97,44 @@ index 232c1e7..cf1b41e 100644
 +        current_version: A version string to print bumped, if given.
 +        fail_on: Exit nonzero when the recommendation meets this level.
 +        ignore: Top-level public names to exclude from the comparison.
-+        search_paths: Accepted for parity with the other commands and ignored;
-+            the two versions are located by `old_path` and `new_path`.
-+        append_sys_path: Accepted for parity and ignored, as above.
-+        **load_options: Extra loading options (extensions, inspection, stubs)
-+            forwarded to the loader for both versions.
++        extensions: The extensions to use.
++        search_paths: Extra search paths added to both version loads.
++        append_sys_path: Whether to also add `sys.path` to the search paths.
++        **load_options: Extra loading options (inspection, stubs) forwarded to
++            the loader for both versions.
 +
 +    Returns:
-+        `0`, or `1` when `fail_on` gates the exit code or `--bump` is given a
-+        malformed version.
++        `0`, or `1` when `fail_on` gates the exit code, `--bump` is given a
++        malformed version, or the extensions cannot be loaded.
 +    """
 +    import json  # noqa: PLC0415
 +
 +    from griffe._internal.encoders import JSONEncoder  # noqa: PLC0415
 +    from griffe._internal.enumerations import Bump  # noqa: PLC0415
++    from griffe._internal.exceptions import ExtensionError  # noqa: PLC0415
++    from griffe._internal.extensions.base import load_extensions  # noqa: PLC0415
++    from griffe._internal.logger import logger  # noqa: PLC0415
 +    from griffe._internal.semver import bump_between  # noqa: PLC0415
 +
-+    report = bump_between(package, old_path, new_path, ignore=ignore, **load_options)
++    try:
++        loaded_extensions = load_extensions(*(extensions or ()))
++    except ExtensionError:
++        logger.exception("Could not load extensions")
++        return 1
++
++    shared_paths = [str(path) for path in (search_paths or [])]
++    if append_sys_path:
++        shared_paths.extend(sys.path)
++
++    report = bump_between(
++        package,
++        old_path,
++        new_path,
++        ignore=ignore,
++        search_paths=shared_paths,
++        extensions=loaded_extensions,
++        **load_options,
++    )
 +
 +    if current_version is not None:
 +        try:
@@ -135,7 +157,7 @@ index 232c1e7..cf1b41e 100644
  def dump(
      packages: Sequence[str],
      *,
-@@ -623,5 +737,5 @@ def main(args: list[str] | None = None) -> int:
+@@ -623,5 +759,5 @@ def main(args: list[str] | None = None) -> int:
      sys.setrecursionlimit(max(2000, sys.getrecursionlimit()))
  
      # Run subcommand.
@@ -211,10 +233,10 @@ index 17e346a..32a22da 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 0000000..ffd0039
+index 0000000..c88d40f
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,633 @@
+@@ -0,0 +1,636 @@
 +from __future__ import annotations
 +
 +import re
@@ -743,18 +765,20 @@ index 0000000..ffd0039
 +    new_path: str,
 +    *,
 +    ignore: Iterable[str] = (),
++    search_paths: Iterable[str] = (),
 +    **load_options: Any,
 +) -> BumpReport:
 +    """Load two versions of a package and recommend a bump between them.
 +
-+    The package is loaded once from each search path and the two models are
-+    compared with `recommend_bump`.
++    Each version is located by its own path, and any extra search paths are
++    added to both loads so shared dependencies resolve the same way for each.
 +
 +    Parameters:
 +        package: The package name to load from each path.
 +        old_path: Search path for the old version.
 +        new_path: Search path for the new version.
 +        ignore: Top-level public names to exclude from the comparison.
++        search_paths: Extra search paths added to both loads.
 +        **load_options: Extra options forwarded to the loader.
 +
 +    Returns:
@@ -762,8 +786,9 @@ index 0000000..ffd0039
 +    """
 +    from griffe._internal.loader import load  # noqa: PLC0415
 +
-+    old = load(package, search_paths=[old_path], **load_options)
-+    new = load(package, search_paths=[new_path], **load_options)
++    shared = list(search_paths)
++    old = load(package, search_paths=[old_path, *shared], **load_options)
++    new = load(package, search_paths=[new_path, *shared], **load_options)
 +    return recommend_bump(old, new, ignore=ignore)  # ty:ignore[invalid-argument-type]
 +
 +
