@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..0a460ad
+index 0000000..a2be1d4
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,630 @@
+@@ -0,0 +1,727 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -213,7 +213,7 @@ index 0000000..0a460ad
 +        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
 +    )
 +    report = _bump(old, new)
-+    assert report.counts == {"ADDED": 1, "EXPANDED": 1}
++    assert report.counts == {"added": 1, "expanded": 1}
 +
 +
 +def test_function_became_attribute_is_major() -> None:
@@ -246,15 +246,11 @@ index 0000000..0a460ad
 +        'def tool(a):\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
 +    )
 +    text = report.render_text()
-+    # Case-insensitive: the level must be named, but its casing is presentation.
 +    assert griffe.Bump.MAJOR.value in text.lower()
 +    assert "helper" in text
 +
 +
 +def test_render_markdown_lists_every_change() -> None:
-+    # A report with two kinds present: the Markdown names the level and lists
-+    # every changed path. The exact heading text per kind is presentation and is
-+    # not pinned here.
 +    report = _bump(
 +        'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n',
 +        'def tool(a):\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
@@ -310,8 +306,6 @@ index 0000000..0a460ad
 +
 +
 +def test_bump_between_forwards_load_options(tmp_path, monkeypatch) -> None:
-+    # Spy on the loader to prove the extra options reach both the old and the new
-+    # load, not merely that the wrapper accepts them.
 +    from griffe._internal import loader
 +
 +    calls: list[dict] = []
@@ -337,10 +331,6 @@ index 0000000..0a460ad
 +
 +
 +def test_reexport_tracks_the_exported_name(tmp_path) -> None:
-+    # The definition moves between private submodules but the exported name is
-+    # unchanged, so the public surface is identical and the bump is a patch.
-+    # Comparing by the canonical definition path would wrongly see a removal and
-+    # an addition here.
 +    old = {
 +        "__init__.py": 'from semold._a import tool\n__all__ = ["tool"]\n',
 +        "_a.py": 'def tool():\n    """Doc."""\n',
@@ -356,8 +346,6 @@ index 0000000..0a460ad
 +
 +
 +def test_reexported_class_member_addition_is_minor() -> None:
-+    # A method added to a class exposed only through a re-export must be seen
-+    # under the exported name: the walk descends into re-exported containers.
 +    old = {
 +        "__init__.py": 'from semold._impl import Tool\n__all__ = ["Tool"]\n',
 +        "_impl.py": 'class Tool:\n    """Doc."""\n\n    def run(self):\n        """Doc."""\n',
@@ -376,9 +364,6 @@ index 0000000..0a460ad
 +
 +
 +def test_reexported_module_member_removal_is_major() -> None:
-+    # A member deleted from a re-exported module is a real deletion the detector
-+    # catches, so it is reported once, as BREAKING, under the exported path — not
-+    # a second time as a removal, and never under the private definition path.
 +    old = {
 +        "__init__.py": 'from semold import _sub as api\n__all__ = ["api"]\n',
 +        "_sub.py": 'def a():\n    """Doc."""\n\ndef b():\n    """Doc."""\n',
@@ -396,8 +381,6 @@ index 0000000..0a460ad
 +
 +
 +def test_reexported_class_member_removal_is_major() -> None:
-+    # Mirror of the module case for a method deleted from a re-exported class:
-+    # reported once, as BREAKING, under the exported path.
 +    old = {
 +        "__init__.py": 'from semold._impl import Tool\n__all__ = ["Tool"]\n',
 +        "_impl.py": (
@@ -449,20 +432,17 @@ index 0000000..0a460ad
 +
 +
 +def test_all_breaking_report_counts_and_serialization() -> None:
-+    # A function losing two parameters yields several BREAKING changes on one
-+    # path and nothing else, so counts holds only BREAKING, changes_of_kind for
-+    # other kinds is empty, and as_dict preserves the duplicate BREAKING entries.
 +    old = 'def tool(a, b, c):\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    new = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MAJOR
-+    assert set(report.counts) == {"BREAKING"}
-+    assert report.counts["BREAKING"] >= 2
++    assert set(report.counts) == {"breaking"}
++    assert report.counts["breaking"] >= 2
 +    assert report.changes_of_kind(griffe.ChangeKind.ADDED) == []
 +    assert report.changes_of_kind(griffe.ChangeKind.REMOVED) == []
 +    payload = report.as_dict()
 +    breaking_entries = [c for c in payload["changes"] if c["kind"] == "breaking"]
-+    assert len(breaking_entries) == report.counts["BREAKING"]
++    assert len(breaking_entries) == report.counts["breaking"]
 +    assert all(entry["path"] == "tool" for entry in breaking_entries)
 +
 +
@@ -481,9 +461,6 @@ index 0000000..0a460ad
 +
 +
 +def test_dropped_from_all_is_a_removal() -> None:
-+    # A name pulled from __all__ while still defined leaves the public surface
-+    # without the breaking-change detector flagging it, so it is a REMOVED
-+    # change and still forces a major bump.
 +    old = (
 +        'def tool():\n    """Doc."""\n\n'
 +        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
@@ -620,8 +597,6 @@ index 0000000..0a460ad
 +
 +
 +def test_cli_semver_accepts_shared_loading_options(tmp_path) -> None:
-+    # The subcommand shares the common loading flags with check and dump; a
-+    # loading option like --no-inspection is accepted and threaded to the loader.
 +    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    exit_code, output = _run_semver(tmp_path, code, code, "--no-inspection")
 +    assert exit_code == 0
@@ -629,11 +604,133 @@ index 0000000..0a460ad
 +
 +
 +def test_cli_semver_bump_rejects_malformed_version(tmp_path) -> None:
-+    # A malformed --bump version surfaces as a nonzero exit. Only the exit code
-+    # is required by the spec; whether an error message is printed is left open.
 +    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    exit_code, _ = _run_semver(tmp_path, code, code, "--bump", "not-a-version")
 +    assert exit_code != 0
++
++
++def test_newly_deprecated_object_is_minor() -> None:
++    old = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = (
++        'from typing_extensions import deprecated\n\n'
++        '@deprecated("use other")\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    )
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.deprecations == ["tool"]
++    assert report.as_dict()["deprecations"] == ["tool"]
++
++
++def test_already_deprecated_object_is_patch() -> None:
++    code = (
++        'from typing_extensions import deprecated\n\n'
++        '@deprecated("use other")\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    )
++    report = _bump(code, code)
++    assert report.bump is griffe.Bump.PATCH
++    assert report.deprecations == []
++
++
++def test_ignored_names_are_excluded() -> None:
++    old = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = (
++        'def tool():\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
++    )
++    with (
++        temporary_visited_package("semold", {"__init__.py": old}) as old_module,
++        temporary_visited_package("semnew", {"__init__.py": new}) as new_module,
++    ):
++        report = griffe.recommend_bump(old_module, new_module, ignore=["helper"])
++    assert report.bump is griffe.Bump.PATCH
++    assert report.changes == []
++
++
++def test_ignored_breaking_change_is_excluded() -> None:
++    old = 'def tool(a, b):\n    """Doc."""\n\ndef other():\n    """Doc."""\n\n__all__ = ["tool", "other"]\n'
++    new = 'def tool(a):\n    """Doc."""\n\ndef other():\n    """Doc."""\n\n__all__ = ["tool", "other"]\n'
++    with (
++        temporary_visited_package("semold", {"__init__.py": old}) as old_module,
++        temporary_visited_package("semnew", {"__init__.py": new}) as new_module,
++    ):
++        report = griffe.recommend_bump(old_module, new_module, ignore=["tool"])
++    assert report.bump is griffe.Bump.PATCH
++    assert report.breaking == []
++
++
++def test_class_gaining_base_is_minor_expansion() -> None:
++    old = 'class Tool:\n    """Doc."""\n\nclass Mixin:\n    """Doc."""\n\n__all__ = ["Tool", "Mixin"]\n'
++    new = 'class Tool(Mixin):\n    """Doc."""\n\nclass Mixin:\n    """Doc."""\n\n__all__ = ["Tool", "Mixin"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert "Tool" in report.expansions
++
++
++def test_function_gaining_return_annotation_is_minor_expansion() -> None:
++    old = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = 'def tool(a) -> int:\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.expansions == ["tool"]
++
++
++def test_changelog_groups_by_top_level_name() -> None:
++    old = (
++        'class Tool:\n    """Doc."""\n\n    def run(self):\n        """Doc."""\n\n'
++        'def helper(a, b):\n    """Doc."""\n\n__all__ = ["Tool", "helper"]\n'
++    )
++    new = (
++        'class Tool:\n    """Doc."""\n\n    def run(self):\n        """Doc."""\n\n'
++        '    def stop(self):\n        """Doc."""\n\n'
++        'def helper(a):\n    """Doc."""\n\n__all__ = ["Tool", "helper"]\n'
++    )
++    report = _bump(old, new)
++    grouped = report.changelog()
++    assert set(grouped) == {"Tool", "helper"}
++    assert [c.path for c in grouped["Tool"]] == ["Tool.stop"]
++    assert all(c.path.split(".", 1)[0] == "helper" for c in grouped["helper"])
++
++
++def test_change_severity_maps_kind_to_level() -> None:
++    old = 'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = (
++        'def tool(a):\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
++    )
++    report = _bump(old, new)
++    for change in report.changes_of_kind(griffe.ChangeKind.BREAKING):
++        assert change.severity is griffe.Bump.MAJOR
++    for change in report.changes_of_kind(griffe.ChangeKind.ADDED):
++        assert change.severity is griffe.Bump.MINOR
++
++
++def test_gated_by_accepts_level_name() -> None:
++    old = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = (
++        'def tool():\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
++    )
++    report = _bump(old, new)
++    assert report.gated_by("minor")
++    assert not report.gated_by("major")
++
++
++def test_cli_semver_ignore_excludes_names(tmp_path) -> None:
++    old = 'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    exit_code, output = _run_semver(tmp_path, old, new, "--ignore", "tool", "--json")
++    assert exit_code == 0
++    payload = json.loads(output)
++    assert payload["bump"] == "patch"
++    assert payload["changes"] == []
++
++
++def test_attribute_gaining_annotation_is_minor_expansion() -> None:
++    old = 'x = 1\n\n__all__ = ["x"]\n'
++    new = 'x: int = 1\n\n__all__ = ["x"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.expansions == ["x"]
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..73581df

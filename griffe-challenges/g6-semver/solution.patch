@@ -1,5 +1,5 @@
 diff --git a/packages/griffecli/src/griffecli/_internal/cli.py b/packages/griffecli/src/griffecli/_internal/cli.py
-index 232c1e7..13d3f00 100644
+index 232c1e7..cf1b41e 100644
 --- a/packages/griffecli/src/griffecli/_internal/cli.py
 +++ b/packages/griffecli/src/griffecli/_internal/cli.py
 @@ -132,7 +132,7 @@ def get_parser() -> argparse.ArgumentParser:
@@ -11,7 +11,7 @@ index 232c1e7..13d3f00 100644
  
      usage = "%(prog)s [GLOBAL_OPTS...] COMMAND [COMMAND_OPTS...]"
      description = "Signatures for entire Python programs. "
-@@ -326,9 +326,113 @@ def get_parser() -> argparse.ArgumentParser:
+@@ -326,9 +326,123 @@ def get_parser() -> argparse.ArgumentParser:
      check_options.add_argument("-f", "--format", dest="style", choices=formats, default=None, help="Output format.")
      add_common_options(check_parser)
  
@@ -58,6 +58,14 @@ index 232c1e7..13d3f00 100644
 +        choices=[level.value for level in Bump],
 +        help="Exit nonzero when the recommended bump is at least this level.",
 +    )
++    semver_options.add_argument(
++        "--ignore",
++        dest="ignore",
++        action="append",
++        default=[],
++        metavar="NAME",
++        help="Top-level public name to exclude from the comparison (repeatable).",
++    )
 +    add_common_options(semver_parser)
 +
      return parser
@@ -72,6 +80,7 @@ index 232c1e7..13d3f00 100644
 +    as_markdown: bool = False,
 +    current_version: str | None = None,
 +    fail_on: str | None = None,
++    ignore: Sequence[str] = (),
 +    search_paths: Sequence[str | Path] | None = None,
 +    append_sys_path: bool = False,
 +    **load_options: Any,
@@ -86,6 +95,7 @@ index 232c1e7..13d3f00 100644
 +        as_markdown: Whether to output the report as Markdown.
 +        current_version: A version string to print bumped, if given.
 +        fail_on: Exit nonzero when the recommendation meets this level.
++        ignore: Top-level public names to exclude from the comparison.
 +        search_paths: Accepted for parity with the other commands and ignored;
 +            the two versions are located by `old_path` and `new_path`.
 +        append_sys_path: Accepted for parity and ignored, as above.
@@ -102,7 +112,7 @@ index 232c1e7..13d3f00 100644
 +    from griffe._internal.enumerations import Bump  # noqa: PLC0415
 +    from griffe._internal.semver import bump_between  # noqa: PLC0415
 +
-+    report = bump_between(package, old_path, new_path, **load_options)
++    report = bump_between(package, old_path, new_path, ignore=ignore, **load_options)
 +
 +    if current_version is not None:
 +        try:
@@ -117,7 +127,7 @@ index 232c1e7..13d3f00 100644
 +    else:
 +        print(report.render_text())
 +
-+    if fail_on is not None and report.gated_by(Bump(fail_on)):
++    if fail_on is not None and report.gated_by(fail_on):
 +        return 1
 +    return 0
 +
@@ -125,7 +135,7 @@ index 232c1e7..13d3f00 100644
  def dump(
      packages: Sequence[str],
      *,
-@@ -623,5 +727,5 @@ def main(args: list[str] | None = None) -> int:
+@@ -623,5 +737,5 @@ def main(args: list[str] | None = None) -> int:
      sys.setrecursionlimit(max(2000, sys.getrecursionlimit()))
  
      # Run subcommand.
@@ -166,10 +176,10 @@ index a559e0f..2270549 100644
      "BuiltinModuleError",
      "Class",
 diff --git a/packages/griffelib/src/griffe/_internal/enumerations.py b/packages/griffelib/src/griffe/_internal/enumerations.py
-index 17e346a..11fa729 100644
+index 17e346a..32a22da 100644
 --- a/packages/griffelib/src/griffe/_internal/enumerations.py
 +++ b/packages/griffelib/src/griffe/_internal/enumerations.py
-@@ -199,3 +199,27 @@ class ObjectKind(str, Enum):
+@@ -199,3 +199,29 @@ class ObjectKind(str, Enum):
  
      def __str__(self) -> str:
          return self.value
@@ -196,18 +206,15 @@ index 17e346a..11fa729 100644
 +    ADDED = "added"
 +    """A public object was added."""
 +    EXPANDED = "expanded"
-+    """A signature gained an optional capability without breaking callers."""
++    """An object gained a backward-compatible capability."""
++    DEPRECATED = "deprecated"
++    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 0000000..daee59b
+index 0000000..ffd0039
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,465 @@
-+# This module recommends a semantic version bump between two versions of a
-+# package. Breaking changes and removals force a major bump, additions and
-+# backward-compatible signature expansions a minor bump, and anything else a
-+# patch bump.
-+
+@@ -0,0 +1,633 @@
 +from __future__ import annotations
 +
 +import re
@@ -217,11 +224,10 @@ index 0000000..daee59b
 +from griffe._internal.enumerations import Bump, ChangeKind, ParameterKind
 +
 +if TYPE_CHECKING:
-+    from collections.abc import Iterator
++    from collections.abc import Iterable, Iterator
 +
 +    from griffe._internal.diff import Breakage
-+    from griffe._internal.models import Function, Module, Object
-+
++    from griffe._internal.models import Class, Function, Module, Object
 +
 +_VERSION = re.compile(
 +    r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
@@ -230,6 +236,26 @@ index 0000000..daee59b
 +
 +_VARIADIC_KINDS = frozenset(
 +    {ParameterKind.var_positional, ParameterKind.var_keyword},
++)
++
++_SEVERITY = {Bump.PATCH: 0, Bump.MINOR: 1, Bump.MAJOR: 2}
++
++_KIND_SEVERITY = {
++    ChangeKind.BREAKING: Bump.MAJOR,
++    ChangeKind.REMOVED: Bump.MAJOR,
++    ChangeKind.ADDED: Bump.MINOR,
++    ChangeKind.EXPANDED: Bump.MINOR,
++    ChangeKind.DEPRECATED: Bump.MINOR,
++}
++
++_DEPRECATION_DECORATORS = frozenset(
++    {
++        "warnings.deprecated",
++        "typing.deprecated",
++        "typing_extensions.deprecated",
++        "deprecated.deprecated",
++        "deprecated",
++    },
 +)
 +
 +
@@ -253,6 +279,22 @@ index 0000000..daee59b
 +
 +    def __str__(self) -> str:
 +        return f"{self.kind.value}: {self.path} ({self.detail})"
++
++    def __repr__(self) -> str:
++        return f"Change(kind={self.kind.value!r}, path={self.path!r}, detail={self.detail!r})"
++
++    def __eq__(self, other: object) -> bool:
++        if not isinstance(other, Change):
++            return NotImplemented
++        return (self.kind, self.path, self.detail) == (other.kind, other.path, other.detail)
++
++    def __hash__(self) -> int:
++        return hash((self.kind, self.path, self.detail))
++
++    @property
++    def severity(self) -> Bump:
++        """The bump level this change alone would force."""
++        return _KIND_SEVERITY.get(self.kind, Bump.PATCH)
 +
 +    def as_dict(self, **kwargs: Any) -> dict[str, str]:  # noqa: ARG002
 +        """Return this change as a dictionary.
@@ -287,6 +329,9 @@ index 0000000..daee59b
 +    def __str__(self) -> str:
 +        return self.explain()
 +
++    def __repr__(self) -> str:
++        return f"BumpReport(bump={self.bump.value!r}, changes={len(self.changes)})"
++
 +    def _paths_of(self, kind: ChangeKind) -> list[str]:
 +        return [change.path for change in self.changes if change.kind is kind]
 +
@@ -302,15 +347,20 @@ index 0000000..daee59b
 +
 +    @property
 +    def expansions(self) -> list[str]:
-+        """Paths of signatures that gained an optional capability."""
++        """Paths of objects that gained a backward-compatible capability."""
 +        return self._paths_of(ChangeKind.EXPANDED)
 +
 +    @property
++    def deprecations(self) -> list[str]:
++        """Paths of public objects newly marked as deprecated."""
++        return self._paths_of(ChangeKind.DEPRECATED)
++
++    @property
 +    def counts(self) -> dict[str, int]:
-+        """Mapping from change-kind names to counts, omitting empty kinds."""
++        """Number of changes per kind, keyed by kind value, omitting empty kinds."""
 +        result: dict[str, int] = {}
 +        for change in self.changes:
-+            result[change.kind.name] = result.get(change.kind.name, 0) + 1
++            result[change.kind.value] = result.get(change.kind.value, 0) + 1
 +        return result
 +
 +    def changes_of_kind(self, kind: ChangeKind) -> list[Change]:
@@ -324,6 +374,19 @@ index 0000000..daee59b
 +        """
 +        return [change for change in self.changes if change.kind is kind]
 +
++    def changelog(self) -> dict[str, list[Change]]:
++        """Group the changes by the top-level name they belong to.
++
++        Returns:
++            A mapping from each top-level public name to its changes, in the
++            same order the changes appear in the report.
++        """
++        grouped: dict[str, list[Change]] = {}
++        for change in self.changes:
++            top = change.path.split(".", 1)[0]
++            grouped.setdefault(top, []).append(change)
++        return grouped
++
 +    def explain(self) -> str:
 +        """Explain the recommendation with a one-line human-readable message.
 +
@@ -333,7 +396,7 @@ index 0000000..daee59b
 +        return (
 +            f"{self.bump.value}: {len(self.breaking)} breaking, "
 +            f"{len(self.additions)} added, {len(self.removals)} removed, "
-+            f"{len(self.expansions)} expanded"
++            f"{len(self.expansions)} expanded, {len(self.deprecations)} deprecated"
 +        )
 +
 +    def render_text(self) -> str:
@@ -372,17 +435,18 @@ index 0000000..daee59b
 +            lines.extend(f"- `{change.path}`: {change.detail}" for change in group)
 +        return "\n".join(lines)
 +
-+    def gated_by(self, level: Bump) -> bool:
++    def gated_by(self, level: Bump | str) -> bool:
 +        """Return whether the recommended bump is at least as severe as `level`.
 +
 +        Parameters:
-+            level: The threshold level.
++            level: The threshold level, as a `Bump` member or its string value.
 +
 +        Returns:
 +            Whether the recommendation meets or exceeds the threshold.
 +        """
-+        order = {Bump.PATCH: 0, Bump.MINOR: 1, Bump.MAJOR: 2}
-+        return order[self.bump] >= order[level]
++        if isinstance(level, str):
++            level = Bump(level)
++        return _SEVERITY[self.bump] >= _SEVERITY[level]
 +
 +    def bump_version(self, version: str) -> str:
 +        """Return `version` bumped by the recommended level.
@@ -424,6 +488,7 @@ index 0000000..daee59b
 +            "additions": self.additions,
 +            "removals": self.removals,
 +            "expansions": self.expansions,
++            "deprecations": self.deprecations,
 +            "counts": self.counts,
 +            "changes": [change.as_dict() for change in self.changes],
 +        }
@@ -474,18 +539,21 @@ index 0000000..daee59b
 +    return rest or path
 +
 +
-+def _public_index(module: Module) -> dict[str, Object]:
-+    """Map every public object's package-relative path to the object itself.
++def _public_index(module: Module, ignore: frozenset[str]) -> dict[str, Object]:
++    """Map every public object's exported, package-relative path to the object.
 +
 +    Keys are the paths under which the objects are exposed, relative to the
 +    package name, so the comparison follows the public surface users import. A
 +    re-exported object is tracked under the exported name rather than the
-+    canonical definition path its target carries, which is what a caller sees
-+    and what a semantic-version decision must be based on.
++    canonical definition path its target carries. Any object whose top-level
++    exported name is in `ignore` is left out of the comparison entirely.
 +    """
 +    result: dict[str, Object] = {}
 +    for public_path, target in _iter_public(module, module.name):
-+        result.setdefault(_relative(public_path), target)
++        relative = _relative(public_path)
++        if relative.split(".", 1)[0] in ignore:
++            continue
++        result.setdefault(relative, target)
 +    return result
 +
 +
@@ -495,7 +563,7 @@ index 0000000..daee59b
 +
 +
 +def _signature_expanded(old: Function, new: Function) -> str | None:
-+    """Return a detail string when `new` compatibly expands `old`, else None.
++    """Return a detail string when `new`'s signature compatibly expands `old`.
 +
 +    A compatible expansion keeps every old parameter callable the same way and
 +    either adds only optional parameters, newly accepts arbitrary extra
@@ -524,12 +592,12 @@ index 0000000..daee59b
 +    optionals = sorted(
 +        name
 +        for name, parameter in added.items()
-+        if parameter.kind not in (ParameterKind.var_positional, ParameterKind.var_keyword)
++        if parameter.kind not in _VARIADIC_KINDS
 +    )
 +    variadics = sorted(
 +        parameter.kind.value
 +        for parameter in added.values()
-+        if parameter.kind in (ParameterKind.var_positional, ParameterKind.var_keyword)
++        if parameter.kind in _VARIADIC_KINDS
 +    )
 +    relaxed = sorted(
 +        name
@@ -548,24 +616,133 @@ index 0000000..daee59b
 +        parts.append("variadic " + ", ".join(variadics))
 +    if relaxed:
 +        parts.append("relaxed parameters " + ", ".join(relaxed))
-+    return "expanded: " + " and ".join(parts)
++    return "added " + " and ".join(parts)
++
++
++def _base_names(cls: Class) -> list[str]:
++    """Return the string names of a class's declared bases."""
++    return [str(base) for base in cls.bases]
++
++
++def _bases_expanded(old: Class, new: Class) -> str | None:
++    """Return a detail string when `new` only adds bases to `old`, else None.
++
++    Adding a base class widens what a class provides without breaking existing
++    use, so it is a compatible expansion. Removing or reordering bases is left
++    to the breaking-change detector.
++    """
++    old_bases = _base_names(old)
++    new_bases = _base_names(new)
++    if old_bases == new_bases:
++        return None
++    if any(base not in new_bases for base in old_bases):
++        return None
++    gained = [base for base in new_bases if base not in old_bases]
++    if not gained:
++        return None
++    return "added bases " + ", ".join(gained)
++
++
++def _annotation_added(old: Object, new: Object) -> str | None:
++    """Return a detail string when `new` declares an annotation `old` lacked.
++
++    A function gaining a return annotation, or an attribute gaining a type
++    annotation, adds type information for callers without changing behavior, so
++    it is treated as a compatible expansion.
++    """
++    for attribute, label in (("returns", "return annotation"), ("annotation", "type annotation")):
++        old_value = getattr(old, attribute, None)
++        new_value = getattr(new, attribute, None)
++        if old_value is None and new_value is not None:
++            return f"declared {label}"
++    return None
++
++
++def _compatible_expansion(old: Object, new: Object) -> str | None:
++    """Return a detail string when `new` compatibly expands `old`, else None.
++
++    Dispatches on the object kind: function signatures, class bases and newly
++    declared annotations each contribute a compatible expansion.
++    """
++    if old.is_function and new.is_function:
++        detail = _signature_expanded(old, new)  # ty:ignore[invalid-argument-type]
++        if detail is not None:
++            return detail
++    if old.is_class and new.is_class:
++        detail = _bases_expanded(old, new)  # ty:ignore[invalid-argument-type]
++        if detail is not None:
++            return detail
++    return _annotation_added(old, new)
++
++
++def _is_deprecated(obj: Object) -> bool:
++    """Return whether an object carries a recognized deprecation decorator."""
++    decorators = getattr(obj, "decorators", None) or ()
++    for decorator in decorators:
++        path = decorator.callable_path
++        if path in _DEPRECATION_DECORATORS:
++            return True
++        if path is not None and path.rsplit(".", 1)[-1] == "deprecated":
++            return True
++    return False
++
++
++def _deprecation_added(old: Object, new: Object) -> str | None:
++    """Return a detail string when `new` is deprecated and `old` was not."""
++    if _is_deprecated(new) and not _is_deprecated(old):
++        return "marked as deprecated"
++    return None
 +
 +
 +def _kind_label(obj: Object) -> str:
-+    """Return a coarse kind label for cross-version comparison."""
++    """Return a kind label for change details, refined by object labels."""
 +    if obj.is_module:
 +        return "module"
 +    if obj.is_class:
 +        return "class"
 +    if obj.is_function:
++        labels = getattr(obj, "labels", None) or set()
++        for refined in ("property", "classmethod", "staticmethod"):
++            if refined in labels:
++                return refined
 +        return "function"
++    if getattr(obj, "is_type_alias", False):
++        return "type alias"
 +    return "attribute"
++
++
++def _breakage_detail(breakage: Breakage) -> str:
++    """Return a detail string for a breakage, naming the parameter involved.
++
++    Parameter-level breakages carry the affected parameter in their old or new
++    value; naming it keeps two breakages of the same kind on the same function
++    distinguishable in the change list.
++    """
++    for value in (breakage.old_value, breakage.new_value):
++        name = getattr(value, "name", None)
++        if name:
++            return f"{breakage.kind.value}: {name}"
++    return breakage.kind.value
++
++
++def _dedupe(changes: list[Change]) -> list[Change]:
++    """Drop changes that are identical in kind, path and detail, keeping order."""
++    seen: set[Change] = set()
++    unique: list[Change] = []
++    for change in changes:
++        if change in seen:
++            continue
++        seen.add(change)
++        unique.append(change)
++    return unique
 +
 +
 +def bump_between(
 +    package: str,
 +    old_path: str,
 +    new_path: str,
++    *,
++    ignore: Iterable[str] = (),
 +    **load_options: Any,
 +) -> BumpReport:
 +    """Load two versions of a package and recommend a bump between them.
@@ -577,6 +754,7 @@ index 0000000..daee59b
 +        package: The package name to load from each path.
 +        old_path: Search path for the old version.
 +        new_path: Search path for the new version.
++        ignore: Top-level public names to exclude from the comparison.
 +        **load_options: Extra options forwarded to the loader.
 +
 +    Returns:
@@ -586,37 +764,39 @@ index 0000000..daee59b
 +
 +    old = load(package, search_paths=[old_path], **load_options)
 +    new = load(package, search_paths=[new_path], **load_options)
-+    return recommend_bump(old, new)  # ty:ignore[invalid-argument-type]
++    return recommend_bump(old, new, ignore=ignore)  # ty:ignore[invalid-argument-type]
 +
 +
-+def recommend_bump(old: Module, new: Module) -> BumpReport:
++def recommend_bump(
++    old: Module,
++    new: Module,
++    *,
++    ignore: Iterable[str] = (),
++) -> BumpReport:
 +    """Recommend a semantic version bump between two versions of a package.
 +
 +    A breaking change or a removed public object recommends `Bump.MAJOR`. A
-+    public object added, or a public function whose signature gained an
-+    optional capability without breaking callers, recommends `Bump.MINOR`.
-+    Anything else, including private additions and docstring-only edits,
-+    recommends `Bump.PATCH`. Objects are compared by their path relative to the
-+    package name, and nested members of classes and submodules are compared
-+    too. A removal already explained by a breaking change is not counted again.
++    public object added, or a public object that gained a backward-compatible
++    capability without breaking callers, recommends `Bump.MINOR`. Anything else,
++    including private additions and docstring-only edits, recommends
++    `Bump.PATCH`. Objects are compared by their exported path relative to the
++    package name, and nested members of classes and submodules are compared too.
++    A change already reported as breaking is not counted again.
 +
 +    Parameters:
 +        old: The older version of the package.
 +        new: The newer version of the package.
++        ignore: Top-level public names to exclude from the comparison.
 +
 +    Returns:
 +        The bump report.
 +    """
++    ignored = frozenset(ignore)
 +    breaking = list(find_breaking_changes(old, new))
 +
-+    old_index = _public_index(old)
-+    new_index = _public_index(new)
++    old_index = _public_index(old, ignored)
++    new_index = _public_index(new, ignored)
 +
-+    # The breaking-change detector reports objects under their canonical
-+    # definition path, but re-exported objects are compared here under the name
-+    # they are exposed as. Map canonical paths back to the exported surface so a
-+    # breakage and a surface change for the same object share one path and are
-+    # not counted twice, and so no private definition path leaks into the report.
 +    to_surface = {_relative(obj.path): path for path, obj in old_index.items()}
 +    to_surface.update({_relative(obj.path): path for path, obj in new_index.items()})
 +
@@ -624,12 +804,17 @@ index 0000000..daee59b
 +        relative = _relative(obj.path)
 +        return to_surface.get(relative, relative)
 +
++    breaking = [
++        breakage
++        for breakage in breaking
++        if _surface(breakage.obj).split(".", 1)[0] not in ignored
++    ]
 +    breaking_paths = {_surface(breakage.obj) for breakage in breaking}
 +
 +    changes: list[Change] = []
 +    for breakage in breaking:
 +        changes.append(
-+            Change(ChangeKind.BREAKING, _surface(breakage.obj), breakage.kind.value),
++            Change(ChangeKind.BREAKING, _surface(breakage.obj), _breakage_detail(breakage)),
 +        )
 +    for path, old_obj in old_index.items():
 +        if path not in new_index and path not in breaking_paths:
@@ -642,29 +827,24 @@ index 0000000..daee59b
 +                Change(ChangeKind.ADDED, path, f"public {_kind_label(obj)} added"),
 +            )
 +            continue
-+        # A kind change (function to attribute, class to function, and so on) is
-+        # already reported by the breaking-change detector as an object-kind
-+        # breakage, so it is left to carry the major bump on its own rather than
-+        # being counted a second time here.
 +        if path in breaking_paths:
 +            continue
 +        old_obj = old_index[path]
-+        if obj.is_function and old_obj.is_function:
-+            detail = _signature_expanded(old_obj, obj)  # ty:ignore[invalid-argument-type]
-+            if detail is not None:
-+                changes.append(Change(ChangeKind.EXPANDED, path, detail))
++        detail = _compatible_expansion(old_obj, obj)
++        if detail is not None:
++            changes.append(Change(ChangeKind.EXPANDED, path, detail))
++        deprecation = _deprecation_added(old_obj, obj)
++        if deprecation is not None:
++            changes.append(Change(ChangeKind.DEPRECATED, path, deprecation))
 +
++    changes = _dedupe(changes)
 +    changes.sort(key=lambda change: (change.path, change.kind.value))
 +
-+    has_major = any(change.kind is ChangeKind.REMOVED for change in changes)
-+    has_addition = any(
-+        change.kind in (ChangeKind.ADDED, ChangeKind.EXPANDED) for change in changes
-+    )
-+    if breaking or has_major:
++    bump = Bump.PATCH
++    for change in changes:
++        if _SEVERITY[change.severity] > _SEVERITY[bump]:
++            bump = change.severity
++    if breaking:
 +        bump = Bump.MAJOR
-+    elif has_addition:
-+        bump = Bump.MINOR
-+    else:
-+        bump = Bump.PATCH
 +
 +    return BumpReport(bump, breaking, changes)
