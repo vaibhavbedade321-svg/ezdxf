@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..85279e8
+index 0000000..cec36bd
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,432 @@
+@@ -0,0 +1,450 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -315,6 +315,24 @@ index 0000000..85279e8
 +    breaking_paths = [c.path for c in report.changes_of_kind(griffe.ChangeKind.BREAKING)]
 +    assert "helper" in breaking_paths
 +    assert not any(c.path == "helper" for c in report.changes_of_kind(griffe.ChangeKind.REMOVED))
++
++
++def test_dropped_from_all_is_a_removal() -> None:
++    # A name pulled from __all__ while still defined leaves the public surface
++    # without the breaking-change detector flagging it, so it is a REMOVED
++    # change and still forces a major bump.
++    old = (
++        'def tool():\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
++    )
++    new = (
++        'def tool():\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    )
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.removals == ["helper"]
++    assert [c.path for c in report.changes_of_kind(griffe.ChangeKind.REMOVED)] == ["helper"]
 +
 +
 +def test_changes_are_sorted_by_path_then_kind() -> None:
