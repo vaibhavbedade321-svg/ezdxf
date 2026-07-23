@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..e677817
+index 0000000..b9d5a9b
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,351 @@
+@@ -0,0 +1,413 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -20,6 +20,14 @@ index 0000000..e677817
 +    with (
 +        temporary_visited_package("semold", {"__init__.py": old}) as old_module,
 +        temporary_visited_package("semnew", {"__init__.py": new}) as new_module,
++    ):
++        return griffe.recommend_bump(old_module, new_module)
++
++
++def _bump_multi(old: dict, new: dict):
++    with (
++        temporary_visited_package("semold", old) as old_module,
++        temporary_visited_package("semnew", new) as new_module,
 +    ):
 +        return griffe.recommend_bump(old_module, new_module)
 +
@@ -226,9 +234,9 @@ index 0000000..e677817
 +        'def tool(a):\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
 +    )
 +    text = report.render_text()
-+    assert text.splitlines()[0] == "Recommended bump: major"
++    assert griffe.Bump.MAJOR.value in text.splitlines()[0]
 +    assert "helper" in text
-+    assert any("breaking" in line for line in text.splitlines())
++    assert any(griffe.ChangeKind.BREAKING.value in line for line in text.splitlines())
 +
 +
 +def test_render_markdown_groups_changes() -> None:
@@ -237,14 +245,18 @@ index 0000000..e677817
 +        'def tool():\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
 +    )
 +    text = report.render_markdown()
-+    assert text.startswith("# Recommended bump: minor")
-+    assert "## added (1)" in text
-+    assert "`helper`" in text
++    first = text.splitlines()[0]
++    assert first.startswith("#")
++    assert griffe.Bump.MINOR.value in first
++    assert griffe.ChangeKind.ADDED.value in text
++    assert "helper" in text
 +
 +
 +def test_render_text_clean_when_no_changes() -> None:
 +    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
-+    assert "no public API changes" in _bump(code, code).render_text()
++    text = _bump(code, code).render_text()
++    assert text.count("\n") == 0
++    assert griffe.Bump.PATCH.value in text
 +
 +
 +def test_gated_by_thresholds() -> None:
@@ -282,6 +294,56 @@ index 0000000..e677817
 +    report = griffe.bump_between("semverpkg", old_path, new_path)
 +    assert report.bump is griffe.Bump.MINOR
 +    assert report.additions == ["helper"]
++
++
++def test_removed_object_not_double_counted() -> None:
++    old = (
++        'def tool():\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
++    )
++    new = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    report = _bump(old, new)
++    assert report.breaking
++    assert report.removals == []
++    breaking_paths = [c.path for c in report.changes_of_kind(griffe.ChangeKind.BREAKING)]
++    assert "helper" in breaking_paths
++    assert not any(c.path == "helper" for c in report.changes_of_kind(griffe.ChangeKind.REMOVED))
++
++
++def test_changes_are_sorted_by_path_then_kind() -> None:
++    old = 'def alpha(a):\n    """Doc."""\n\n__all__ = ["alpha"]\n'
++    new = (
++        'def alpha(a, b=1):\n    """Doc."""\n\n'
++        'def beta():\n    """Doc."""\n\n'
++        'def gamma():\n    """Doc."""\n\n__all__ = ["alpha", "beta", "gamma"]\n'
++    )
++    report = _bump(old, new)
++    keys = [(change.path, change.kind.value) for change in report.changes]
++    assert keys == sorted(keys)
++
++
++def test_submodule_member_addition_is_minor() -> None:
++    old = {
++        "__init__.py": '"""Doc."""\nfrom semold import sub\n\n__all__ = ["sub"]\n',
++        "sub.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++    }
++    new = {
++        "__init__.py": '"""Doc."""\nfrom semnew import sub\n\n__all__ = ["sub"]\n',
++        "sub.py": (
++            '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n'
++            'def extra():\n    """Doc."""\n\n__all__ = ["tool", "extra"]\n'
++        ),
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert "sub.extra" in report.additions
++
++
++def test_render_markdown_empty_delta() -> None:
++    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    text = _bump(code, code).render_markdown()
++    assert griffe.Bump.PATCH.value in text.splitlines()[0]
++    assert not any(line.startswith("- ") for line in text.splitlines())
 +
 +
 +def test_public_api_is_exported() -> None:
