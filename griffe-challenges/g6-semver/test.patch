@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..cec36bd
+index 0000000..6f5e3b8
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,521 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -303,6 +303,68 @@ index 0000000..cec36bd
 +    assert report.additions == ["helper"]
 +
 +
++def test_bump_between_forwards_load_options(tmp_path) -> None:
++    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    old_path = _write_version(tmp_path, "old", code)
++    new_path = _write_version(tmp_path, "new", code)
++    # allow_inspection is a real load() keyword; the convenience wrapper must
++    # forward it through to the loader rather than swallowing or rejecting it.
++    report = griffe.bump_between(
++        "semverpkg", old_path, new_path, allow_inspection=False
++    )
++    assert report.bump is griffe.Bump.PATCH
++
++
++def test_reexport_tracks_the_exported_name(tmp_path) -> None:
++    # The definition moves between private submodules but the exported name is
++    # unchanged, so the public surface is identical and the bump is a patch.
++    # Comparing by the canonical definition path would wrongly see a removal and
++    # an addition here.
++    old = {
++        "__init__.py": 'from semold._a import tool\n__all__ = ["tool"]\n',
++        "_a.py": 'def tool():\n    """Doc."""\n',
++    }
++    new = {
++        "__init__.py": 'from semnew._b import tool\n__all__ = ["tool"]\n',
++        "_b.py": 'def tool():\n    """Doc."""\n',
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.PATCH
++    assert report.additions == []
++    assert report.removals == []
++
++
++def test_changes_carry_nonempty_detail() -> None:
++    old = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = (
++        'def tool(a, b=1):\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
++    )
++    report = _bump(old, new)
++    assert report.changes
++    for change in report.changes:
++        assert change.detail
++    for entry in report.as_dict()["changes"]:
++        assert entry["kind"]
++        assert entry["path"]
++        assert entry["detail"]
++
++
++def test_multiple_breakings_on_one_path_sort_together() -> None:
++    old = 'def tool(a, b, c):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = (
++        'def tool(a):\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
++    )
++    report = _bump(old, new)
++    tool_breaks = [
++        c for c in report.changes_of_kind(griffe.ChangeKind.BREAKING) if c.path == "tool"
++    ]
++    assert len(tool_breaks) >= 2
++    keys = [(change.path, change.kind.value) for change in report.changes]
++    assert keys == sorted(keys)
++
++
 +def test_removed_object_not_double_counted() -> None:
 +    old = (
 +        'def tool():\n    """Doc."""\n\n'
@@ -454,6 +516,15 @@ index 0000000..cec36bd
 +    )
 +    assert exit_code == 0
 +    assert output.strip() == "1.5.0"
++
++
++def test_cli_semver_accepts_shared_loading_options(tmp_path) -> None:
++    # The subcommand shares the common loading flags with check and dump; a
++    # loading option like --no-inspection is accepted and threaded to the loader.
++    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    exit_code, output = _run_semver(tmp_path, code, code, "--no-inspection")
++    assert exit_code == 0
++    assert griffe.Bump.PATCH.value in output
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..73581df

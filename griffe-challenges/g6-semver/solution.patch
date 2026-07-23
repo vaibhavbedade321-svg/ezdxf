@@ -1,5 +1,5 @@
 diff --git a/packages/griffecli/src/griffecli/_internal/cli.py b/packages/griffecli/src/griffecli/_internal/cli.py
-index 232c1e7..bc78125 100644
+index 232c1e7..1f93b0e 100644
 --- a/packages/griffecli/src/griffecli/_internal/cli.py
 +++ b/packages/griffecli/src/griffecli/_internal/cli.py
 @@ -132,7 +132,7 @@ def get_parser() -> argparse.ArgumentParser:
@@ -11,7 +11,7 @@ index 232c1e7..bc78125 100644
  
      usage = "%(prog)s [GLOBAL_OPTS...] COMMAND [COMMAND_OPTS...]"
      description = "Signatures for entire Python programs. "
-@@ -326,9 +326,107 @@ def get_parser() -> argparse.ArgumentParser:
+@@ -326,9 +326,108 @@ def get_parser() -> argparse.ArgumentParser:
      check_options.add_argument("-f", "--format", dest="style", choices=formats, default=None, help="Output format.")
      add_common_options(check_parser)
  
@@ -58,6 +58,7 @@ index 232c1e7..bc78125 100644
 +        choices=[level.value for level in Bump],
 +        help="Exit nonzero when the recommended bump is at least this level.",
 +    )
++    add_common_options(semver_parser)
 +
      return parser
  
@@ -71,8 +72,9 @@ index 232c1e7..bc78125 100644
 +    as_markdown: bool = False,
 +    current_version: str | None = None,
 +    fail_on: str | None = None,
-+    allow_inspection: bool = True,
-+    force_inspection: bool = False,
++    search_paths: Sequence[str | Path] | None = None,
++    append_sys_path: bool = False,
++    **load_options: Any,
 +) -> int:
 +    """Recommend a semantic version bump between two versions of a package.
 +
@@ -81,12 +83,17 @@ index 232c1e7..bc78125 100644
 +        old_path: Search path for the old version.
 +        new_path: Search path for the new version.
 +        as_json: Whether to output the report as JSON.
++        as_markdown: Whether to output the report as Markdown.
 +        current_version: A version string to print bumped, if given.
-+        allow_inspection: Whether to allow inspecting modules.
-+        force_inspection: Whether to force dynamic analysis.
++        fail_on: Exit nonzero when the recommendation meets this level.
++        search_paths: Accepted for parity with the other commands and ignored;
++            the two versions are located by `old_path` and `new_path`.
++        append_sys_path: Accepted for parity and ignored, as above.
++        **load_options: Extra loading options (extensions, inspection, stubs)
++            forwarded to the loader for both versions.
 +
 +    Returns:
-+        `0` always; the recommendation is advisory.
++        `0` always unless `fail_on` gates the exit code.
 +    """
 +    import json  # noqa: PLC0415
 +
@@ -94,13 +101,7 @@ index 232c1e7..bc78125 100644
 +    from griffe._internal.enumerations import Bump  # noqa: PLC0415
 +    from griffe._internal.semver import bump_between  # noqa: PLC0415
 +
-+    report = bump_between(
-+        package,
-+        old_path,
-+        new_path,
-+        allow_inspection=allow_inspection,
-+        force_inspection=force_inspection,
-+    )
++    report = bump_between(package, old_path, new_path, **load_options)
 +
 +    if current_version is not None:
 +        print(report.bump_version(current_version))
@@ -119,7 +120,7 @@ index 232c1e7..bc78125 100644
  def dump(
      packages: Sequence[str],
      *,
-@@ -623,5 +721,5 @@ def main(args: list[str] | None = None) -> int:
+@@ -623,5 +722,5 @@ def main(args: list[str] | None = None) -> int:
      sys.setrecursionlimit(max(2000, sys.getrecursionlimit()))
  
      # Run subcommand.
@@ -193,10 +194,10 @@ index 17e346a..11fa729 100644
 +    """A signature gained an optional capability without breaking callers."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 0000000..502d0c1
+index 0000000..fec6231
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,438 @@
+@@ -0,0 +1,441 @@
 +# This module recommends a semantic version bump between two versions of a
 +# package. Breaking changes and removals force a major bump, additions and
 +# backward-compatible signature expansions a minor bump, and anything else a
@@ -460,12 +461,15 @@ index 0000000..502d0c1
 +def _public_index(module: Module) -> dict[str, Object]:
 +    """Map every public object's package-relative path to the object itself.
 +
-+    Keys are relative to the package name so the comparison is independent of
-+    the name the package happens to be loaded under.
++    Keys are the paths under which the objects are exposed, relative to the
++    package name, so the comparison follows the public surface users import. A
++    re-exported object is tracked under the exported name rather than the
++    canonical definition path its target carries, which is what a caller sees
++    and what a semantic-version decision must be based on.
 +    """
 +    result: dict[str, Object] = {}
-+    for _, target in _iter_public(module, module.name):
-+        result.setdefault(_relative(target.path), target)
++    for public_path, target in _iter_public(module, module.name):
++        result.setdefault(_relative(public_path), target)
 +    return result
 +
 +
