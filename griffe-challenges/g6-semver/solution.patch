@@ -160,10 +160,10 @@ index a559e0f..2270549 100644
      "BuiltinModuleError",
      "Class",
 diff --git a/packages/griffelib/src/griffe/_internal/enumerations.py b/packages/griffelib/src/griffe/_internal/enumerations.py
-index 17e346a..4722601 100644
+index 17e346a..11fa729 100644
 --- a/packages/griffelib/src/griffe/_internal/enumerations.py
 +++ b/packages/griffelib/src/griffe/_internal/enumerations.py
-@@ -199,3 +199,29 @@ class ObjectKind(str, Enum):
+@@ -199,3 +199,27 @@ class ObjectKind(str, Enum):
  
      def __str__(self) -> str:
          return self.value
@@ -191,14 +191,12 @@ index 17e346a..4722601 100644
 +    """A public object was added."""
 +    EXPANDED = "expanded"
 +    """A signature gained an optional capability without breaking callers."""
-+    KIND_CHANGED = "kind-changed"
-+    """A public object changed between function, class and attribute."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 0000000..88bdc5b
+index 0000000..502d0c1
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,422 @@
+@@ -0,0 +1,438 @@
 +# This module recommends a semantic version bump between two versions of a
 +# package. Breaking changes and removals force a major bump, additions and
 +# backward-compatible signature expansions a minor bump, and anything else a
@@ -447,10 +445,16 @@ index 0000000..88bdc5b
 +            yield from _iter_public(member, member_path)
 +
 +
-+def _relative(path: str, package: str) -> str:
-+    """Drop the leading package component so two versions compare by identity."""
-+    prefix = f"{package}."
-+    return path[len(prefix):] if path.startswith(prefix) else path
++def _relative(path: str) -> str:
++    """Drop the leading package component so two versions compare by identity.
++
++    Only the first dotted segment is dropped: every object path begins with the
++    name the package was loaded under, so this makes the comparison independent
++    of that name, whether the path comes from the old model, the new model or a
++    breakage record.
++    """
++    _, _, rest = path.partition(".")
++    return rest or path
 +
 +
 +def _public_index(module: Module) -> dict[str, Object]:
@@ -461,7 +465,7 @@ index 0000000..88bdc5b
 +    """
 +    result: dict[str, Object] = {}
 +    for _, target in _iter_public(module, module.name):
-+        result.setdefault(_relative(target.path, module.name), target)
++        result.setdefault(_relative(target.path), target)
 +    return result
 +
 +
@@ -474,9 +478,11 @@ index 0000000..88bdc5b
 +    """Return a detail string when `new` compatibly expands `old`, else None.
 +
 +    A compatible expansion keeps every old parameter callable the same way and
-+    adds only optional parameters, or newly accepts arbitrary extra arguments
-+    through a variadic the old signature lacked. Any change that could break an
-+    existing call is left to the breaking-change detector instead.
++    either adds only optional parameters, newly accepts arbitrary extra
++    arguments through a variadic the old signature lacked, or relaxes an
++    already-present required parameter to optional by giving it a default. Any
++    change that could break an existing call is left to the breaking-change
++    detector instead.
 +    """
 +    old_params = {parameter.name: parameter for parameter in old.parameters}
 +    new_params = {parameter.name: parameter for parameter in new.parameters}
@@ -505,7 +511,14 @@ index 0000000..88bdc5b
 +        for parameter in added.values()
 +        if parameter.kind in (ParameterKind.var_positional, ParameterKind.var_keyword)
 +    )
-+    if not optionals and not variadics:
++    relaxed = sorted(
++        name
++        for name, parameter in new_params.items()
++        if name in old_params
++        and _is_optional(parameter)
++        and not _is_optional(old_params[name])
++    )
++    if not optionals and not variadics and not relaxed:
 +        return None
 +
 +    parts = []
@@ -513,7 +526,9 @@ index 0000000..88bdc5b
 +        parts.append("optional parameters " + ", ".join(optionals))
 +    if variadics:
 +        parts.append("variadic " + ", ".join(variadics))
-+    return "added " + " and ".join(parts)
++    if relaxed:
++        parts.append("relaxed parameters " + ", ".join(relaxed))
++    return "expanded: " + " and ".join(parts)
 +
 +
 +def _kind_label(obj: Object) -> str:
@@ -573,7 +588,7 @@ index 0000000..88bdc5b
 +        The bump report.
 +    """
 +    breaking = list(find_breaking_changes(old, new))
-+    breaking_paths = {_relative(breakage.obj.path, old.name) for breakage in breaking}
++    breaking_paths = {_relative(breakage.obj.path) for breakage in breaking}
 +
 +    old_index = _public_index(old)
 +    new_index = _public_index(new)
@@ -581,25 +596,26 @@ index 0000000..88bdc5b
 +    changes: list[Change] = []
 +    for breakage in breaking:
 +        changes.append(
-+            Change(ChangeKind.BREAKING, _relative(breakage.obj.path, old.name), breakage.kind.value),
++            Change(ChangeKind.BREAKING, _relative(breakage.obj.path), breakage.kind.value),
 +        )
-+    for path in old_index:
++    for path, old_obj in old_index.items():
 +        if path not in new_index and path not in breaking_paths:
-+            changes.append(Change(ChangeKind.REMOVED, path, "public object removed"))
++            changes.append(
++                Change(ChangeKind.REMOVED, path, f"public {_kind_label(old_obj)} removed"),
++            )
 +    for path, obj in new_index.items():
 +        if path not in old_index:
-+            changes.append(Change(ChangeKind.ADDED, path, "public object added"))
-+            continue
-+        old_obj = old_index[path]
-+        if path in breaking_paths:
-+            continue
-+        old_label = _kind_label(old_obj)
-+        new_label = _kind_label(obj)
-+        if old_label != new_label:
 +            changes.append(
-+                Change(ChangeKind.KIND_CHANGED, path, f"{old_label} became {new_label}"),
++                Change(ChangeKind.ADDED, path, f"public {_kind_label(obj)} added"),
 +            )
 +            continue
++        # A kind change (function to attribute, class to function, and so on) is
++        # already reported by the breaking-change detector as an object-kind
++        # breakage, so it is left to carry the major bump on its own rather than
++        # being counted a second time here.
++        if path in breaking_paths:
++            continue
++        old_obj = old_index[path]
 +        if obj.is_function and old_obj.is_function:
 +            detail = _signature_expanded(old_obj, obj)  # ty:ignore[invalid-argument-type]
 +            if detail is not None:
@@ -607,9 +623,7 @@ index 0000000..88bdc5b
 +
 +    changes.sort(key=lambda change: (change.path, change.kind.value))
 +
-+    has_major = any(
-+        change.kind in (ChangeKind.REMOVED, ChangeKind.KIND_CHANGED) for change in changes
-+    )
++    has_major = any(change.kind is ChangeKind.REMOVED for change in changes)
 +    has_addition = any(
 +        change.kind in (ChangeKind.ADDED, ChangeKind.EXPANDED) for change in changes
 +    )
