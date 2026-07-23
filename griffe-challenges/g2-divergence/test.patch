@@ -1,0 +1,560 @@
+diff --git a/packages/griffelib/tests/test_agent_parity.py b/packages/griffelib/tests/test_agent_parity.py
+new file mode 100644
+index 0000000..3b48c07
+--- /dev/null
++++ b/packages/griffelib/tests/test_agent_parity.py
+@@ -0,0 +1,503 @@
++"""Tests for the static/dynamic divergence report."""
++
++from __future__ import annotations
++
++import json
++import sys
++from contextlib import contextmanager
++from importlib import invalidate_caches
++from itertools import count
++from typing import TYPE_CHECKING
++
++import pytest
++
++import griffe
++from griffe import temporary_pypackage
++
++if TYPE_CHECKING:
++    from collections.abc import Iterator
++
++    from griffe import Module
++
++_counter = count()
++
++
++@contextmanager
++def _fresh_package(code: str) -> Iterator[tuple[str, object]]:
++    name = f"dvpkg{next(_counter)}"
++    with temporary_pypackage(name, {"__init__.py": code}) as tmp_package:
++        try:
++            yield name, tmp_package
++        finally:
++            for module_name in tuple(sys.modules):
++                if module_name == name or module_name.startswith(f"{name}."):
++                    sys.modules.pop(module_name, None)
++            invalidate_caches()
++
++
++@contextmanager
++def _both_models(code: str) -> Iterator[tuple[Module, Module]]:
++    with _fresh_package(code) as (name, tmp_package):
++        static, dynamic = griffe.load_both(
++            name,
++            search_paths=[tmp_package.tmpdir],
++        )
++        yield static, dynamic
++
++
++def _divergences(code: str) -> list:
++    with _both_models(code) as (static, dynamic):
++        return list(griffe.find_divergences(static, dynamic))
++
++
++def _kinds(divergences: list) -> set:
++    return {divergence.kind for divergence in divergences}
++
++
++def test_identical_module_has_no_divergences() -> None:
++    divergences = _divergences(
++        """
++        def func(a: int, b: str = "x") -> bool:
++            return True
++
++        class Config:
++            limit = 10
++        """,
++    )
++    assert divergences == []
++
++
++def test_imported_names_are_not_divergences() -> None:
++    divergences = _divergences(
++        """
++        from os import path
++        from json import dumps as encode
++        """,
++    )
++    assert divergences == []
++
++
++def test_wraps_preserving_decorator_has_no_divergences() -> None:
++    divergences = _divergences(
++        """
++        from functools import wraps
++
++        def deco(func):
++            @wraps(func)
++            def inner(*args, **kwargs):
++                return func(*args, **kwargs)
++            return inner
++
++        @deco
++        def func(a: int, b: str = "ok") -> int:
++            return a
++        """,
++    )
++    assert divergences == []
++
++
++def test_signature_erasing_decorator_is_reported_once() -> None:
++    divergences = _divergences(
++        """
++        def deco(func):
++            def inner(*args, **kwargs):
++                return func(*args, **kwargs)
++            return inner
++
++        @deco
++        def func(a: int, b: str = "ok") -> int:
++            return a
++        """,
++    )
++    assert len(divergences) == 1
++    divergence = divergences[0]
++    assert divergence.kind is griffe.DivergenceKind.SIGNATURE_ERASED
++    assert divergence.object_path.endswith(".func")
++
++
++def test_partially_rewritten_signature_reports_parameter_kinds() -> None:
++    divergences = _divergences(
++        """
++        def deco(func):
++            def inner(a):
++                return func(a, None)
++            return inner
++
++        @deco
++        def func(a, b): ...
++        """,
++    )
++    assert _kinds(divergences) == {griffe.DivergenceKind.PARAMETER_MISSING}
++    assert divergences[0].object_path.endswith("func(b)")
++
++
++def test_changed_default_is_reported() -> None:
++    divergences = _divergences(
++        """
++        def deco(func):
++            def inner(a=5):
++                return func(a)
++            return inner
++
++        @deco
++        def func(a=1): ...
++        """,
++    )
++    assert _kinds(divergences) == {griffe.DivergenceKind.PARAMETER_DEFAULT}
++
++
++def test_reordered_parameters_are_reported() -> None:
++    divergences = _divergences(
++        """
++        def deco(func):
++            def inner(b, a):
++                return func(a, b)
++            return inner
++
++        @deco
++        def func(a, b): ...
++        """,
++    )
++    assert griffe.DivergenceKind.PARAMETER_ORDER in _kinds(divergences)
++
++
++def test_changed_parameter_kind_is_reported() -> None:
++    divergences = _divergences(
++        """
++        def deco(func):
++            def inner(*, a):
++                return func(a)
++            return inner
++
++        @deco
++        def func(a): ...
++        """,
++    )
++    assert _kinds(divergences) == {griffe.DivergenceKind.PARAMETER_KIND}
++
++
++def test_changed_annotation_is_reported() -> None:
++    divergences = _divergences(
++        """
++        def deco(func):
++            def inner(a: str):
++                return func(a)
++            return inner
++
++        @deco
++        def func(a: int): ...
++        """,
++    )
++    assert _kinds(divergences) == {griffe.DivergenceKind.ANNOTATION}
++
++
++def test_type_checking_guarded_names_are_not_divergences() -> None:
++    divergences = _divergences(
++        """
++        from typing import TYPE_CHECKING
++
++        if TYPE_CHECKING:
++            from collections.abc import Sequence
++
++        def func() -> None: ...
++        """,
++    )
++    assert divergences == []
++
++
++def test_property_is_not_a_kind_divergence() -> None:
++    divergences = _divergences(
++        """
++        class Config:
++            @property
++            def name(self) -> str:
++                return "x"
++        """,
++    )
++    assert divergences == []
++
++
++def test_runtime_computed_class_is_a_kind_divergence() -> None:
++    divergences = _divergences(
++        """
++        def _factory():
++            class Hidden: ...
++            return Hidden
++
++        Dynamic = _factory()
++        """,
++    )
++    assert len(divergences) == 1
++    divergence = divergences[0]
++    assert divergence.kind is griffe.DivergenceKind.KIND_MISMATCH
++    assert divergence.object_path.endswith(".Dynamic")
++
++
++def test_runtime_injected_module_attributes_are_not_divergences() -> None:
++    divergences = _divergences("value = 1\n")
++    assert divergences == []
++
++
++def test_dataclass_generated_methods_are_not_divergences() -> None:
++    divergences = _divergences(
++        """
++        from dataclasses import dataclass
++
++        @dataclass
++        class Point:
++            x: int
++            y: int = 0
++        """,
++    )
++    assert divergences == []
++
++
++def test_annotation_only_declarations_are_not_divergences() -> None:
++    divergences = _divergences(
++        """
++        limit: int
++
++        class Config:
++            timeout: float
++        """,
++    )
++    assert divergences == []
++
++
++def test_runtime_appended_all_is_an_exports_divergence() -> None:
++    divergences = _divergences(
++        """
++        __all__ = ["func"]
++        __all__ += [name for name in ("extra",)]
++
++        def func() -> None: ...
++
++        def extra() -> None: ...
++        """,
++    )
++    assert griffe.DivergenceKind.EXPORTS_MISMATCH in _kinds(divergences)
++
++
++def test_matching_all_is_not_a_divergence() -> None:
++    divergences = _divergences(
++        """
++        __all__ = ["func"]
++
++        def func() -> None: ...
++        """,
++    )
++    assert divergences == []
++
++
++def test_conditionally_defined_member_is_reported() -> None:
++    divergences = _divergences(
++        """
++        import sys
++
++        if sys.maxsize < 0:
++            def impossible() -> None: ...
++        """,
++    )
++    assert len(divergences) == 1
++    divergence = divergences[0]
++    assert divergence.kind is griffe.DivergenceKind.MEMBER_MISSING
++    assert divergence.object_path.endswith(".impossible")
++    assert divergence.dynamic_value is None
++
++
++def test_runtime_only_member_is_reported() -> None:
++    divergences = _divergences(
++        """
++        import sys
++
++        setattr(sys.modules[__name__], "injected", 42)
++        """,
++    )
++    paths = {divergence.object_path for divergence in divergences}
++    assert any(path.endswith(".injected") for path in paths)
++    for divergence in divergences:
++        if divergence.object_path.endswith(".injected"):
++            assert divergence.kind is griffe.DivergenceKind.MEMBER_MISSING
++            assert divergence.static_value is None
++
++
++def test_metaclass_replaced_base_is_reported() -> None:
++    divergences = _divergences(
++        """
++        class Base: ...
++
++        class Other: ...
++
++        def _swap(cls):
++            return type(cls.__name__, (Other,), dict(cls.__dict__))
++
++        @_swap
++        class Child(Base): ...
++        """,
++    )
++    assert griffe.DivergenceKind.BASES_MISMATCH in _kinds(divergences)
++
++
++def test_implicit_object_base_is_ignored() -> None:
++    divergences = _divergences(
++        """
++        class Plain:
++            def act(self): ...
++        """,
++    )
++    assert not [
++        d for d in divergences if d.kind is griffe.DivergenceKind.BASES_MISMATCH
++    ]
++
++
++def test_same_bases_are_not_a_divergence() -> None:
++    divergences = _divergences(
++        """
++        class Base: ...
++
++        class Child(Base): ...
++        """,
++    )
++    assert divergences == []
++
++
++def test_nested_class_members_are_compared() -> None:
++    divergences = _divergences(
++        """
++        import sys
++
++        class Outer:
++            class Inner:
++                if sys.maxsize < 0:
++                    def ghost(self) -> None: ...
++        """,
++    )
++    assert len(divergences) == 1
++    assert divergences[0].object_path.endswith(".Outer.Inner.ghost")
++
++
++def test_divergence_as_dict_is_json_serializable() -> None:
++    divergences = _divergences(
++        """
++        def _factory():
++            class Hidden: ...
++            return Hidden
++
++        Dynamic = _factory()
++        """,
++    )
++    payload = json.dumps([divergence.as_dict() for divergence in divergences])
++    decoded = json.loads(payload)
++    assert decoded[0]["kind"]
++    assert decoded[0]["object_path"].endswith(".Dynamic")
++    assert decoded[0]["static_value"] is not None
++    assert decoded[0]["dynamic_value"] is not None
++
++
++def test_divergence_explain_mentions_both_values() -> None:
++    divergences = _divergences(
++        """
++        def _factory():
++            class Hidden: ...
++            return Hidden
++
++        Dynamic = _factory()
++        """,
++    )
++    divergence = divergences[0]
++    text = divergence.explain()
++    payload = divergence.as_dict()
++    assert "\n" not in text
++    assert ".Dynamic" in text
++    assert divergence.kind.value in text
++    assert str(payload["static_value"]) in text
++    assert str(payload["dynamic_value"]) in text
++
++
++def test_load_both_returns_independent_trees() -> None:
++    with _both_models("value = 1\n") as (static, dynamic):
++        assert static is not dynamic
++        assert static["value"] is not dynamic["value"]
++
++
++def test_erased_signature_carries_both_values() -> None:
++    divergences = _divergences(
++        """
++        def deco(func):
++            def inner(*args, **kwargs):
++                return func(*args, **kwargs)
++            return inner
++
++        @deco
++        def func(a: int) -> int:
++            return a
++        """,
++    )
++    divergence = divergences[0]
++    assert divergence.kind is griffe.DivergenceKind.SIGNATURE_ERASED
++    payload = json.loads(json.dumps(divergence.as_dict()))
++    assert payload["static_value"]
++    assert payload["dynamic_value"]
++    assert payload["static_value"] != payload["dynamic_value"]
++
++
++def test_cli_runtime_reports_divergences(capsys: pytest.CaptureFixture) -> None:
++    from griffecli import main
++
++    code = """
++    def deco(func):
++        def inner(*args, **kwargs):
++            return func(*args, **kwargs)
++        return inner
++
++    @deco
++    def func(a: int) -> int:
++        return a
++    """
++    with temporary_pypackage("dvclipkg", {"__init__.py": code}) as tmp_package:
++        exit_code = main(
++            ["check", "--runtime", "-s", str(tmp_package.tmpdir), tmp_package.name],
++        )
++    captured = capsys.readouterr()
++    assert exit_code == 1
++    assert "dvclipkg.func" in captured.err
++
++
++def test_cli_runtime_clean_package_exits_zero(capsys: pytest.CaptureFixture) -> None:
++    from griffecli import main
++
++    code = """
++    def func(a: int, b: str = "x") -> bool:
++        return True
++    """
++    with temporary_pypackage("dvclipkg2", {"__init__.py": code}) as tmp_package:
++        exit_code = main(
++            ["check", "--runtime", "-s", str(tmp_package.tmpdir), tmp_package.name],
++        )
++    captured = capsys.readouterr()
++    assert exit_code == 0
++    assert captured.err == ""
++
++
++def test_cli_runtime_json_output(capsys: pytest.CaptureFixture) -> None:
++    from griffecli import main
++
++    code = """
++    def deco(func):
++        def inner(*args, **kwargs):
++            return func(*args, **kwargs)
++        return inner
++
++    @deco
++    def func(a: int) -> int:
++        return a
++    """
++    with temporary_pypackage("dvclipkg3", {"__init__.py": code}) as tmp_package:
++        exit_code = main(
++            ["check", "--runtime", "--json", "-s", str(tmp_package.tmpdir), tmp_package.name],
++        )
++    captured = capsys.readouterr()
++    assert exit_code == 1
++    payload = json.loads(captured.out)
++    assert isinstance(payload, list)
++    assert payload[0]["object_path"] == "dvclipkg3.func"
+diff --git a/test.sh b/test.sh
+new file mode 100755
+index 0000000..cdca388
+--- /dev/null
++++ b/test.sh
+@@ -0,0 +1,45 @@
++#!/usr/bin/env bash
++set -uo pipefail
++
++OUTPUT_PATH=""
++MODE=""
++
++while [[ $# -gt 0 ]]; do
++    case "$1" in
++        --output_path)
++            OUTPUT_PATH="$2"
++            shift 2
++            ;;
++        base|new)
++            MODE="$1"
++            shift
++            ;;
++        *)
++            echo "unknown argument: $1" >&2
++            exit 2
++            ;;
++    esac
++done
++
++if [[ -z "$OUTPUT_PATH" || -z "$MODE" ]]; then
++    echo "usage: test.sh --output_path <path> {base|new}" >&2
++    exit 2
++fi
++
++cd "$(dirname "$0")/packages/griffelib"
++
++NEW_TESTS="tests/test_agent_parity.py"
++
++case "$MODE" in
++    base)
++        python3 -m pytest tests/ -o addopts= -v \
++            --ignore=tests/test_stdlib.py \
++            --ignore=tests/test_api.py \
++            --ignore="$NEW_TESTS" \
++            --junitxml="$OUTPUT_PATH"
++        ;;
++    new)
++        python3 -m pytest "$NEW_TESTS" -o addopts= -v \
++            --junitxml="$OUTPUT_PATH"
++        ;;
++esac

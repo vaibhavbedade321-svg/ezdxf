@@ -1,0 +1,623 @@
+diff --git a/packages/griffecli/src/griffecli/_internal/cli.py b/packages/griffecli/src/griffecli/_internal/cli.py
+index 232c1e7..bc78125 100644
+--- a/packages/griffecli/src/griffecli/_internal/cli.py
++++ b/packages/griffecli/src/griffecli/_internal/cli.py
+@@ -132,7 +132,7 @@ def get_parser() -> argparse.ArgumentParser:
+         An argparse parser.
+     """
+     from griffe._internal import debug  # noqa: PLC0415
+-    from griffe._internal.enumerations import ExplanationStyle, Parser  # noqa: PLC0415
++    from griffe._internal.enumerations import Bump, ExplanationStyle, Parser  # noqa: PLC0415
+ 
+     usage = "%(prog)s [GLOBAL_OPTS...] COMMAND [COMMAND_OPTS...]"
+     description = "Signatures for entire Python programs. "
+@@ -326,9 +326,107 @@ def get_parser() -> argparse.ArgumentParser:
+     check_options.add_argument("-f", "--format", dest="style", choices=formats, default=None, help="Output format.")
+     add_common_options(check_parser)
+ 
++    # ========= SEMVER PARSER ========= #
++    semver_parser = add_subparser("semver", "Recommend a semantic version bump between two versions.")
++    semver_options = semver_parser.add_argument_group(title="Semver options")
++    semver_options.add_argument("package", metavar="PACKAGE", help="Package to find, load and compare.")
++    semver_options.add_argument(
++        "--old",
++        dest="old_path",
++        required=True,
++        help="Search path for the old version of the package.",
++    )
++    semver_options.add_argument(
++        "--new",
++        dest="new_path",
++        required=True,
++        help="Search path for the new version of the package.",
++    )
++    semver_options.add_argument(
++        "--json",
++        dest="as_json",
++        action="store_true",
++        default=False,
++        help="Output the report as JSON.",
++    )
++    semver_options.add_argument(
++        "--markdown",
++        dest="as_markdown",
++        action="store_true",
++        default=False,
++        help="Output the report as Markdown.",
++    )
++    semver_options.add_argument(
++        "--bump",
++        dest="current_version",
++        default=None,
++        help="Print the given version bumped by the recommended level.",
++    )
++    semver_options.add_argument(
++        "--fail-on",
++        dest="fail_on",
++        default=None,
++        choices=[level.value for level in Bump],
++        help="Exit nonzero when the recommended bump is at least this level.",
++    )
++
+     return parser
+ 
+ 
++def semver(
++    package: str,
++    *,
++    old_path: str,
++    new_path: str,
++    as_json: bool = False,
++    as_markdown: bool = False,
++    current_version: str | None = None,
++    fail_on: str | None = None,
++    allow_inspection: bool = True,
++    force_inspection: bool = False,
++) -> int:
++    """Recommend a semantic version bump between two versions of a package.
++
++    Parameters:
++        package: The package to load from each search path.
++        old_path: Search path for the old version.
++        new_path: Search path for the new version.
++        as_json: Whether to output the report as JSON.
++        current_version: A version string to print bumped, if given.
++        allow_inspection: Whether to allow inspecting modules.
++        force_inspection: Whether to force dynamic analysis.
++
++    Returns:
++        `0` always; the recommendation is advisory.
++    """
++    import json  # noqa: PLC0415
++
++    from griffe._internal.encoders import JSONEncoder  # noqa: PLC0415
++    from griffe._internal.enumerations import Bump  # noqa: PLC0415
++    from griffe._internal.semver import bump_between  # noqa: PLC0415
++
++    report = bump_between(
++        package,
++        old_path,
++        new_path,
++        allow_inspection=allow_inspection,
++        force_inspection=force_inspection,
++    )
++
++    if current_version is not None:
++        print(report.bump_version(current_version))
++    elif as_json:
++        print(json.dumps(report.as_dict(), cls=JSONEncoder))
++    elif as_markdown:
++        print(report.render_markdown())
++    else:
++        print(report.render_text())
++
++    if fail_on is not None and report.gated_by(Bump(fail_on)):
++        return 1
++    return 0
++
++
+ def dump(
+     packages: Sequence[str],
+     *,
+@@ -623,5 +721,5 @@ def main(args: list[str] | None = None) -> int:
+     sys.setrecursionlimit(max(2000, sys.getrecursionlimit()))
+ 
+     # Run subcommand.
+-    commands: dict[str, Callable[..., int]] = {"check": check, "dump": dump}
++    commands: dict[str, Callable[..., int]] = {"check": check, "dump": dump, "semver": semver}
+     return commands[subcommand](**opts_dict)
+diff --git a/packages/griffelib/src/griffe/__init__.py b/packages/griffelib/src/griffe/__init__.py
+index a559e0f..2270549 100644
+--- a/packages/griffelib/src/griffe/__init__.py
++++ b/packages/griffelib/src/griffe/__init__.py
+@@ -178,6 +178,7 @@ from griffe._internal.agents.nodes.values import get_value, safe_get_value
+ from griffe._internal.agents.visitor import Visitor, builtin_decorators, stdlib_decorators, typing_overload, visit
+ from griffe._internal.c3linear import c3linear_merge
+ from griffe._internal.collections import LinesCollection, ModulesCollection
++from griffe._internal.semver import BumpReport, bump_between, recommend_bump
+ from griffe._internal.diff import (
+     AttributeChangedTypeBreakage,
+     AttributeChangedValueBreakage,
+@@ -250,6 +251,8 @@ from griffe._internal.docstrings.utils import docstring_warning, parse_docstring
+ from griffe._internal.encoders import JSONEncoder, json_decoder
+ from griffe._internal.enumerations import (
+     BreakageKind,
++    Bump,
++    ChangeKind,
+     DocstringSectionKind,
+     ExplanationStyle,
+     Kind,
+@@ -384,6 +387,11 @@ __all__ = [
+     "AttributeChangedValueBreakage",
+     "AutoOptions",
+     "Breakage",
++    "Bump",
++    "BumpReport",
++    "ChangeKind",
++    "bump_between",
++    "recommend_bump",
+     "BreakageKind",
+     "BuiltinModuleError",
+     "Class",
+diff --git a/packages/griffelib/src/griffe/_internal/enumerations.py b/packages/griffelib/src/griffe/_internal/enumerations.py
+index 17e346a..4722601 100644
+--- a/packages/griffelib/src/griffe/_internal/enumerations.py
++++ b/packages/griffelib/src/griffe/_internal/enumerations.py
+@@ -199,3 +199,29 @@ class ObjectKind(str, Enum):
+ 
+     def __str__(self) -> str:
+         return self.value
++
++
++class Bump(str, Enum):
++    """Enumeration of the semantic version bump levels."""
++
++    MAJOR = "major"
++    """A backward-incompatible change."""
++    MINOR = "minor"
++    """A backward-compatible addition."""
++    PATCH = "patch"
++    """A change with no effect on the public API."""
++
++
++class ChangeKind(str, Enum):
++    """Enumeration of the public API change categories."""
++
++    BREAKING = "breaking"
++    """A backward-incompatible change."""
++    REMOVED = "removed"
++    """A public object was removed."""
++    ADDED = "added"
++    """A public object was added."""
++    EXPANDED = "expanded"
++    """A signature gained an optional capability without breaking callers."""
++    KIND_CHANGED = "kind-changed"
++    """A public object changed between function, class and attribute."""
+diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
+new file mode 100644
+index 0000000..88bdc5b
+--- /dev/null
++++ b/packages/griffelib/src/griffe/_internal/semver.py
+@@ -0,0 +1,422 @@
++# This module recommends a semantic version bump between two versions of a
++# package. Breaking changes and removals force a major bump, additions and
++# backward-compatible signature expansions a minor bump, and anything else a
++# patch bump.
++
++from __future__ import annotations
++
++import re
++from typing import TYPE_CHECKING, Any
++
++from griffe._internal.diff import find_breaking_changes
++from griffe._internal.enumerations import Bump, ChangeKind, ParameterKind
++
++if TYPE_CHECKING:
++    from collections.abc import Iterator
++
++    from griffe._internal.diff import Breakage
++    from griffe._internal.models import Function, Module, Object
++
++
++_VERSION = re.compile(
++    r"^(?P<major>0|[1-9]\d*)\.(?P<minor>0|[1-9]\d*)\.(?P<patch>0|[1-9]\d*)"
++    r"(?P<suffix>[-+].*)?$"
++)
++
++_VARIADIC_KINDS = frozenset(
++    {ParameterKind.var_positional, ParameterKind.var_keyword},
++)
++
++
++class Change:
++    """A single public API change between two versions of a package."""
++
++    def __init__(self, kind: ChangeKind, path: str, detail: str) -> None:
++        """Initialize the change.
++
++        Parameters:
++            kind: The change category.
++            path: The path of the changed object.
++            detail: A short human-readable detail.
++        """
++        self.kind = kind
++        """The change category."""
++        self.path = path
++        """The path of the changed object."""
++        self.detail = detail
++        """A short human-readable detail."""
++
++    def __str__(self) -> str:
++        return f"{self.kind.value}: {self.path} ({self.detail})"
++
++    def as_dict(self, **kwargs: Any) -> dict[str, str]:  # noqa: ARG002
++        """Return this change as a dictionary.
++
++        Parameters:
++            **kwargs: Additional serialization options.
++
++        Returns:
++            A dictionary.
++        """
++        return {"kind": self.kind.value, "path": self.path, "detail": self.detail}
++
++
++class BumpReport:
++    """The recommended version bump between two versions of a package."""
++
++    def __init__(self, bump: Bump, breaking: list[Breakage], changes: list[Change]) -> None:
++        """Initialize the report.
++
++        Parameters:
++            bump: The recommended bump level.
++            breaking: The breaking changes found.
++            changes: Every public API change, sorted by path then kind.
++        """
++        self.bump = bump
++        """The recommended bump level."""
++        self.breaking = breaking
++        """The breaking changes found."""
++        self.changes = changes
++        """Every public API change, sorted by path then kind."""
++
++    def __str__(self) -> str:
++        return self.explain()
++
++    def _paths_of(self, kind: ChangeKind) -> list[str]:
++        return [change.path for change in self.changes if change.kind is kind]
++
++    @property
++    def additions(self) -> list[str]:
++        """Paths of public objects added in the new version."""
++        return self._paths_of(ChangeKind.ADDED)
++
++    @property
++    def removals(self) -> list[str]:
++        """Paths of public objects removed in the new version."""
++        return self._paths_of(ChangeKind.REMOVED)
++
++    @property
++    def expansions(self) -> list[str]:
++        """Paths of signatures that gained an optional capability."""
++        return self._paths_of(ChangeKind.EXPANDED)
++
++    @property
++    def counts(self) -> dict[str, int]:
++        """Mapping from change-kind names to counts, omitting empty kinds."""
++        result: dict[str, int] = {}
++        for change in self.changes:
++            result[change.kind.name] = result.get(change.kind.name, 0) + 1
++        return result
++
++    def changes_of_kind(self, kind: ChangeKind) -> list[Change]:
++        """Return the changes of one kind, in report order.
++
++        Parameters:
++            kind: The change kind to filter by.
++
++        Returns:
++            The matching changes.
++        """
++        return [change for change in self.changes if change.kind is kind]
++
++    def explain(self) -> str:
++        """Explain the recommendation with a one-line human-readable message.
++
++        Returns:
++            A message naming the bump level and the change counts.
++        """
++        return (
++            f"{self.bump.value}: {len(self.breaking)} breaking, "
++            f"{len(self.additions)} added, {len(self.removals)} removed, "
++            f"{len(self.expansions)} expanded"
++        )
++
++    def render_text(self) -> str:
++        """Render the report as plain text.
++
++        The first line states the recommended bump, followed by one line per
++        change. A report with no changes renders a single line.
++        """
++        header = f"Recommended bump: {self.bump.value}"
++        if not self.changes:
++            return f"{header} (no public API changes)"
++        lines = [header]
++        lines.extend(f"  {change}" for change in self.changes)
++        return "\n".join(lines)
++
++    def render_markdown(self) -> str:
++        """Render the report as Markdown.
++
++        The bump is a heading and changes are grouped under one subheading per
++        category, each with a bullet per change.
++        """
++        lines = [f"# Recommended bump: {self.bump.value}"]
++        if not self.changes:
++            lines.append("")
++            lines.append("No public API changes.")
++            return "\n".join(lines)
++        by_kind: dict[ChangeKind, list[Change]] = {}
++        for change in self.changes:
++            by_kind.setdefault(change.kind, []).append(change)
++        for kind in ChangeKind:
++            group = by_kind.get(kind)
++            if not group:
++                continue
++            lines.append("")
++            lines.append(f"## {kind.value} ({len(group)})")
++            lines.extend(f"- `{change.path}`: {change.detail}" for change in group)
++        return "\n".join(lines)
++
++    def gated_by(self, level: Bump) -> bool:
++        """Return whether the recommended bump is at least as severe as `level`.
++
++        Parameters:
++            level: The threshold level.
++
++        Returns:
++            Whether the recommendation meets or exceeds the threshold.
++        """
++        order = {Bump.PATCH: 0, Bump.MINOR: 1, Bump.MAJOR: 2}
++        return order[self.bump] >= order[level]
++
++    def bump_version(self, version: str) -> str:
++        """Return `version` bumped by the recommended level.
++
++        Parameters:
++            version: A `major.minor.patch` version string, optionally with a
++                pre-release or build suffix.
++
++        Returns:
++            The bumped version, with any suffix dropped.
++
++        Raises:
++            ValueError: If `version` is not a valid `major.minor.patch` string.
++        """
++        match = _VERSION.match(version)
++        if match is None:
++            raise ValueError(f"invalid version: {version!r}")
++        major = int(match.group("major"))
++        minor = int(match.group("minor"))
++        patch = int(match.group("patch"))
++        if self.bump is Bump.MAJOR:
++            return f"{major + 1}.0.0"
++        if self.bump is Bump.MINOR:
++            return f"{major}.{minor + 1}.0"
++        return f"{major}.{minor}.{patch + 1}"
++
++    def as_dict(self, **kwargs: Any) -> dict[str, Any]:
++        """Return this report's data as a dictionary.
++
++        Parameters:
++            **kwargs: Additional serialization options.
++
++        Returns:
++            A JSON-serializable dictionary.
++        """
++        return {
++            "bump": self.bump.value,
++            "breaking": [breakage.as_dict(**kwargs) for breakage in self.breaking],
++            "additions": self.additions,
++            "removals": self.removals,
++            "expansions": self.expansions,
++            "counts": self.counts,
++            "changes": [change.as_dict() for change in self.changes],
++        }
++
++
++def _iter_public(obj: Object, path: str) -> Iterator[tuple[str, Object]]:
++    """Yield `(path, object)` for every public object reachable from `obj`.
++
++    Aliases are followed to their targets; unresolved aliases are skipped so a
++    broken re-export never aborts the whole walk.
++    """
++    for name, member in obj.members.items():
++        if not member.is_public:
++            continue
++        member_path = f"{path}.{name}"
++        if member.is_alias:
++            try:
++                target = member.final_target  # ty:ignore[unresolved-attribute]
++            except Exception:  # noqa: BLE001
++                continue
++            yield member_path, target
++            continue
++        yield member_path, member  # ty:ignore[invalid-yield]
++        if member.is_module or member.is_class:
++            yield from _iter_public(member, member_path)
++
++
++def _relative(path: str, package: str) -> str:
++    """Drop the leading package component so two versions compare by identity."""
++    prefix = f"{package}."
++    return path[len(prefix):] if path.startswith(prefix) else path
++
++
++def _public_index(module: Module) -> dict[str, Object]:
++    """Map every public object's package-relative path to the object itself.
++
++    Keys are relative to the package name so the comparison is independent of
++    the name the package happens to be loaded under.
++    """
++    result: dict[str, Object] = {}
++    for _, target in _iter_public(module, module.name):
++        result.setdefault(_relative(target.path, module.name), target)
++    return result
++
++
++def _is_optional(parameter: Any) -> bool:
++    """Return whether a parameter can be omitted by a caller."""
++    return parameter.kind in _VARIADIC_KINDS or parameter.default is not None
++
++
++def _signature_expanded(old: Function, new: Function) -> str | None:
++    """Return a detail string when `new` compatibly expands `old`, else None.
++
++    A compatible expansion keeps every old parameter callable the same way and
++    adds only optional parameters, or newly accepts arbitrary extra arguments
++    through a variadic the old signature lacked. Any change that could break an
++    existing call is left to the breaking-change detector instead.
++    """
++    old_params = {parameter.name: parameter for parameter in old.parameters}
++    new_params = {parameter.name: parameter for parameter in new.parameters}
++
++    for name, parameter in old_params.items():
++        if name not in new_params:
++            return None
++        if new_params[name].kind is not parameter.kind:
++            return None
++
++    added = {
++        name: parameter
++        for name, parameter in new_params.items()
++        if name not in old_params
++    }
++    if any(not _is_optional(parameter) for parameter in added.values()):
++        return None
++
++    optionals = sorted(
++        name
++        for name, parameter in added.items()
++        if parameter.kind not in (ParameterKind.var_positional, ParameterKind.var_keyword)
++    )
++    variadics = sorted(
++        parameter.kind.value
++        for parameter in added.values()
++        if parameter.kind in (ParameterKind.var_positional, ParameterKind.var_keyword)
++    )
++    if not optionals and not variadics:
++        return None
++
++    parts = []
++    if optionals:
++        parts.append("optional parameters " + ", ".join(optionals))
++    if variadics:
++        parts.append("variadic " + ", ".join(variadics))
++    return "added " + " and ".join(parts)
++
++
++def _kind_label(obj: Object) -> str:
++    """Return a coarse kind label for cross-version comparison."""
++    if obj.is_module:
++        return "module"
++    if obj.is_class:
++        return "class"
++    if obj.is_function:
++        return "function"
++    return "attribute"
++
++
++def bump_between(
++    package: str,
++    old_path: str,
++    new_path: str,
++    **load_options: Any,
++) -> BumpReport:
++    """Load two versions of a package and recommend a bump between them.
++
++    The package is loaded once from each search path and the two models are
++    compared with `recommend_bump`.
++
++    Parameters:
++        package: The package name to load from each path.
++        old_path: Search path for the old version.
++        new_path: Search path for the new version.
++        **load_options: Extra options forwarded to the loader.
++
++    Returns:
++        The bump report.
++    """
++    from griffe._internal.loader import load  # noqa: PLC0415
++
++    old = load(package, search_paths=[old_path], **load_options)
++    new = load(package, search_paths=[new_path], **load_options)
++    return recommend_bump(old, new)  # ty:ignore[invalid-argument-type]
++
++
++def recommend_bump(old: Module, new: Module) -> BumpReport:
++    """Recommend a semantic version bump between two versions of a package.
++
++    A breaking change or a removed public object recommends `Bump.MAJOR`. A
++    public object added, or a public function whose signature gained an
++    optional capability without breaking callers, recommends `Bump.MINOR`.
++    Anything else, including private additions and docstring-only edits,
++    recommends `Bump.PATCH`. Objects are compared by their path relative to the
++    package name, and nested members of classes and submodules are compared
++    too. A removal already explained by a breaking change is not counted again.
++
++    Parameters:
++        old: The older version of the package.
++        new: The newer version of the package.
++
++    Returns:
++        The bump report.
++    """
++    breaking = list(find_breaking_changes(old, new))
++    breaking_paths = {_relative(breakage.obj.path, old.name) for breakage in breaking}
++
++    old_index = _public_index(old)
++    new_index = _public_index(new)
++
++    changes: list[Change] = []
++    for breakage in breaking:
++        changes.append(
++            Change(ChangeKind.BREAKING, _relative(breakage.obj.path, old.name), breakage.kind.value),
++        )
++    for path in old_index:
++        if path not in new_index and path not in breaking_paths:
++            changes.append(Change(ChangeKind.REMOVED, path, "public object removed"))
++    for path, obj in new_index.items():
++        if path not in old_index:
++            changes.append(Change(ChangeKind.ADDED, path, "public object added"))
++            continue
++        old_obj = old_index[path]
++        if path in breaking_paths:
++            continue
++        old_label = _kind_label(old_obj)
++        new_label = _kind_label(obj)
++        if old_label != new_label:
++            changes.append(
++                Change(ChangeKind.KIND_CHANGED, path, f"{old_label} became {new_label}"),
++            )
++            continue
++        if obj.is_function and old_obj.is_function:
++            detail = _signature_expanded(old_obj, obj)  # ty:ignore[invalid-argument-type]
++            if detail is not None:
++                changes.append(Change(ChangeKind.EXPANDED, path, detail))
++
++    changes.sort(key=lambda change: (change.path, change.kind.value))
++
++    has_major = any(
++        change.kind in (ChangeKind.REMOVED, ChangeKind.KIND_CHANGED) for change in changes
++    )
++    has_addition = any(
++        change.kind in (ChangeKind.ADDED, ChangeKind.EXPANDED) for change in changes
++    )
++    if breaking or has_major:
++        bump = Bump.MAJOR
++    elif has_addition:
++        bump = Bump.MINOR
++    else:
++        bump = Bump.PATCH
++
++    return BumpReport(bump, breaking, changes)

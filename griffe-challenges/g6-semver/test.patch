@@ -1,0 +1,408 @@
+diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
+new file mode 100644
+index 0000000..e677817
+--- /dev/null
++++ b/packages/griffelib/tests/test_semver_recommend.py
+@@ -0,0 +1,351 @@
++"""Tests for the semantic version bump recommendation."""
++
++from __future__ import annotations
++
++import json
++
++import pytest
++
++import griffe
++from griffe import temporary_visited_package
++
++
++def _bump(old: str, new: str):
++    with (
++        temporary_visited_package("semold", {"__init__.py": old}) as old_module,
++        temporary_visited_package("semnew", {"__init__.py": new}) as new_module,
++    ):
++        return griffe.recommend_bump(old_module, new_module)
++
++
++def test_identical_package_is_patch() -> None:
++    code = '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    report = _bump(code, code)
++    assert report.bump is griffe.Bump.PATCH
++    assert report.additions == []
++    assert report.removals == []
++    assert report.breaking == []
++
++
++def test_docstring_only_change_is_patch() -> None:
++    old = 'def tool():\n    """Old."""\n\n__all__ = ["tool"]\n'
++    new = 'def tool():\n    """New."""\n\n__all__ = ["tool"]\n'
++    assert _bump(old, new).bump is griffe.Bump.PATCH
++
++
++def test_added_public_object_is_minor() -> None:
++    old = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = (
++        'def tool():\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
++    )
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions == ["helper"]
++    assert report.removals == []
++
++
++def test_added_private_object_is_patch() -> None:
++    old = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = (
++        'def tool():\n    """Doc."""\n\n'
++        'def _helper():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    )
++    assert _bump(old, new).bump is griffe.Bump.PATCH
++
++
++def test_removed_public_object_is_major() -> None:
++    old = (
++        'def tool():\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
++    )
++    new = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert any(change.path == "helper" for change in report.changes)
++
++
++def test_removed_parameter_is_major() -> None:
++    old = 'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.breaking
++
++
++def test_addition_and_breakage_is_major() -> None:
++    old = 'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = (
++        'def tool(a):\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
++    )
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.additions == ["helper"]
++    assert report.breaking
++
++
++def test_nested_class_addition_is_minor() -> None:
++    old = 'class Tool:\n    """Doc."""\n\n__all__ = ["Tool"]\n'
++    new = (
++        'class Tool:\n    """Doc."""\n\n'
++        '    def run(self):\n        """Doc."""\n\n__all__ = ["Tool"]\n'
++    )
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions == ["Tool.run"]
++
++
++def test_added_class_method_removal_is_major() -> None:
++    old = (
++        'class Tool:\n    """Doc."""\n\n'
++        '    def run(self):\n        """Doc."""\n\n__all__ = ["Tool"]\n'
++    )
++    new = 'class Tool:\n    """Doc."""\n\n__all__ = ["Tool"]\n'
++    assert _bump(old, new).bump is griffe.Bump.MAJOR
++
++
++def test_bump_version_major() -> None:
++    report = _bump(
++        'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n',
++    )
++    assert report.bump_version("2.3.4") == "3.0.0"
++
++
++def test_bump_version_minor() -> None:
++    report = _bump(
++        'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        'def tool():\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++    )
++    assert report.bump_version("2.3.4") == "2.4.0"
++
++
++def test_bump_version_patch() -> None:
++    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    assert _bump(code, code).bump_version("2.3.4") == "2.3.5"
++
++
++def test_bump_version_drops_suffix() -> None:
++    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    assert _bump(code, code).bump_version("2.3.4-rc1") == "2.3.5"
++
++
++def test_bump_version_rejects_invalid() -> None:
++    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    with pytest.raises(ValueError):
++        _bump(code, code).bump_version("v2")
++
++
++def test_report_as_dict_is_json_serializable() -> None:
++    report = _bump(
++        'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        'def tool(a):\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++    )
++    payload = json.loads(json.dumps(report.as_dict(), cls=griffe.JSONEncoder))
++    assert payload["bump"] == "major"
++    assert payload["additions"] == ["helper"]
++    assert payload["breaking"]
++    kinds = {change["kind"] for change in payload["changes"]}
++    assert {"added", "breaking"} <= kinds
++
++
++def test_explain_is_one_line_naming_bump() -> None:
++    report = _bump(
++        'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        'def tool():\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++    )
++    text = report.explain()
++    assert "\n" not in text
++    assert griffe.Bump.MINOR.value in text
++    assert str(report) == text
++
++
++def test_optional_parameter_added_is_minor() -> None:
++    old = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = 'def tool(a, b=1):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.expansions == ["tool"]
++    assert report.additions == []
++
++
++def test_gained_var_keyword_is_minor() -> None:
++    old = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = 'def tool(a, **kwargs):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    assert _bump(old, new).bump is griffe.Bump.MINOR
++
++
++def test_required_parameter_added_is_major() -> None:
++    old = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = 'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.expansions == []
++
++
++def test_counts_maps_change_kinds() -> None:
++    old = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = (
++        'def tool(a, b=1):\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
++    )
++    report = _bump(old, new)
++    assert report.counts == {"ADDED": 1, "EXPANDED": 1}
++
++
++def test_function_became_attribute_is_major() -> None:
++    old = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = 'tool = 3\n\n__all__ = ["tool"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert any(change.kind is griffe.ChangeKind.KIND_CHANGED for change in report.changes)
++
++
++def test_attribute_became_class_is_major() -> None:
++    old = 'thing = 1\n\n__all__ = ["thing"]\n'
++    new = 'class thing:\n    """Doc."""\n\n__all__ = ["thing"]\n'
++    assert _bump(old, new).bump is griffe.Bump.MAJOR
++
++
++def test_same_kind_is_not_a_kind_change() -> None:
++    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    report = _bump(code, code)
++    assert not [c for c in report.changes if c.kind is griffe.ChangeKind.KIND_CHANGED]
++
++
++def test_render_text_lists_changes() -> None:
++    report = _bump(
++        'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        'def tool(a):\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++    )
++    text = report.render_text()
++    assert text.splitlines()[0] == "Recommended bump: major"
++    assert "helper" in text
++    assert any("breaking" in line for line in text.splitlines())
++
++
++def test_render_markdown_groups_changes() -> None:
++    report = _bump(
++        'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        'def tool():\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++    )
++    text = report.render_markdown()
++    assert text.startswith("# Recommended bump: minor")
++    assert "## added (1)" in text
++    assert "`helper`" in text
++
++
++def test_render_text_clean_when_no_changes() -> None:
++    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    assert "no public API changes" in _bump(code, code).render_text()
++
++
++def test_gated_by_thresholds() -> None:
++    minor = _bump(
++        'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        'def tool():\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++    )
++    assert minor.gated_by(griffe.Bump.MINOR)
++    assert not minor.gated_by(griffe.Bump.MAJOR)
++    assert minor.gated_by(griffe.Bump.PATCH)
++
++
++def test_changes_of_kind_filters() -> None:
++    old = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = (
++        'def tool(a, b=1):\n    """Doc."""\n\n'
++        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
++    )
++    report = _bump(old, new)
++    added = report.changes_of_kind(griffe.ChangeKind.ADDED)
++    expanded = report.changes_of_kind(griffe.ChangeKind.EXPANDED)
++    assert [change.path for change in added] == ["helper"]
++    assert [change.path for change in expanded] == ["tool"]
++
++
++def test_bump_between_loads_and_compares(tmp_path) -> None:
++    old_path = _write_version(
++        tmp_path, "old", 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    )
++    new_path = _write_version(
++        tmp_path,
++        "new",
++        'def tool():\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++    )
++    report = griffe.bump_between("semverpkg", old_path, new_path)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions == ["helper"]
++
++
++def test_public_api_is_exported() -> None:
++    for name in ("Bump", "BumpReport", "ChangeKind", "bump_between", "recommend_bump"):
++        assert hasattr(griffe, name)
++
++
++def _write_version(tmp_path, name: str, code: str) -> str:
++    root = tmp_path / name
++    package = root / "semverpkg"
++    package.mkdir(parents=True, exist_ok=True)
++    (package / "__init__.py").write_text(code, encoding="utf8")
++    return str(root)
++
++
++def _run_semver(tmp_path, old: str, new: str, *args: str) -> tuple[int, str]:
++    import io
++    from contextlib import redirect_stdout
++
++    from griffecli import main
++
++    old_path = _write_version(tmp_path, "old", old)
++    new_path = _write_version(tmp_path, "new", new)
++    buffer = io.StringIO()
++    with redirect_stdout(buffer):
++        exit_code = main(
++            ["semver", "semverpkg", "--old", old_path, "--new", new_path, *args]
++        )
++    return exit_code, buffer.getvalue()
++
++
++def test_cli_semver_prints_level(tmp_path) -> None:
++    exit_code, output = _run_semver(
++        tmp_path,
++        'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n',
++    )
++    assert exit_code == 0
++    assert output.splitlines()[0] == "Recommended bump: major"
++
++
++def test_cli_semver_json(tmp_path) -> None:
++    exit_code, output = _run_semver(
++        tmp_path,
++        'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        'def tool():\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++        "--json",
++    )
++    assert exit_code == 0
++    payload = json.loads(output)
++    assert payload["bump"] == "minor"
++    assert payload["additions"] == ["helper"]
++
++
++def test_cli_semver_fail_on_gates_exit(tmp_path) -> None:
++    old = 'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    exit_code, _ = _run_semver(tmp_path, old, new, "--fail-on", "major")
++    assert exit_code == 1
++    exit_code, _ = _run_semver(tmp_path, old, old, "--fail-on", "major")
++    assert exit_code == 0
++
++
++def test_cli_semver_bump_prints_new_version(tmp_path) -> None:
++    exit_code, output = _run_semver(
++        tmp_path,
++        'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        'def tool():\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++        "--bump",
++        "1.4.2",
++    )
++    assert exit_code == 0
++    assert output.strip() == "1.5.0"
+diff --git a/test.sh b/test.sh
+new file mode 100755
+index 0000000..73581df
+--- /dev/null
++++ b/test.sh
+@@ -0,0 +1,45 @@
++#!/usr/bin/env bash
++set -uo pipefail
++
++OUTPUT_PATH=""
++MODE=""
++
++while [[ $# -gt 0 ]]; do
++    case "$1" in
++        --output_path)
++            OUTPUT_PATH="$2"
++            shift 2
++            ;;
++        base|new)
++            MODE="$1"
++            shift
++            ;;
++        *)
++            echo "unknown argument: $1" >&2
++            exit 2
++            ;;
++    esac
++done
++
++if [[ -z "$OUTPUT_PATH" || -z "$MODE" ]]; then
++    echo "usage: test.sh --output_path <path> {base|new}" >&2
++    exit 2
++fi
++
++cd "$(dirname "$0")/packages/griffelib"
++
++NEW_TESTS="tests/test_semver_recommend.py"
++
++case "$MODE" in
++    base)
++        python3 -m pytest tests/ -o addopts= -v \
++            --ignore=tests/test_stdlib.py \
++            --ignore=tests/test_api.py \
++            --ignore="$NEW_TESTS" \
++            --junitxml="$OUTPUT_PATH"
++        ;;
++    new)
++        python3 -m pytest "$NEW_TESTS" -o addopts= -v \
++            --junitxml="$OUTPUT_PATH"
++        ;;
++esac

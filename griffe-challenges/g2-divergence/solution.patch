@@ -1,0 +1,762 @@
+diff --git a/packages/griffecli/src/griffecli/_internal/cli.py b/packages/griffecli/src/griffecli/_internal/cli.py
+index 232c1e7..b20431a 100644
+--- a/packages/griffecli/src/griffecli/_internal/cli.py
++++ b/packages/griffecli/src/griffecli/_internal/cli.py
+@@ -324,6 +324,21 @@ def get_parser() -> argparse.ArgumentParser:
+     check_options.add_argument("-v", "--verbose", action="store_true", help="Verbose output.")
+     formats = [fmt.value for fmt in ExplanationStyle]
+     check_options.add_argument("-f", "--format", dest="style", choices=formats, default=None, help="Output format.")
++    check_options.add_argument(
++        "--runtime",
++        dest="runtime",
++        action="store_true",
++        default=False,
++        help="Compare the static model of the package against its runtime model "
++        "and report divergences, instead of checking against an older version.",
++    )
++    check_options.add_argument(
++        "--json",
++        dest="as_json",
++        action="store_true",
++        default=False,
++        help="Output the runtime divergence report as JSON.",
++    )
+     add_common_options(check_parser)
+ 
+     return parser
+@@ -443,6 +458,8 @@ def check(
+     verbose: bool = False,
+     color: bool | None = None,
+     style: str | ExplanationStyle | None = None,
++    runtime: bool = False,
++    as_json: bool = False,
+ ) -> int:
+     """Check for API breaking changes in two versions of the same package.
+ 
+@@ -457,6 +474,8 @@ def check(
+         allow_inspection: Whether to allow inspecting modules when visiting them is not possible.
+         force_inspection: Whether to force using dynamic analysis when loading data.
+         verbose: Use a verbose output.
++        runtime: Compare static and runtime models of the package instead of two versions.
++        as_json: Render the runtime divergence report as JSON.
+ 
+     Returns:
+         `0` for success, `1` for failure.
+@@ -474,6 +493,31 @@ def check(
+     if append_sys_path:
+         search_paths.extend(sys.path)
+ 
++    if runtime:
++        from griffe._internal.divergence import find_divergences  # noqa: PLC0415
++        from griffe._internal.loader import load_both  # noqa: PLC0415
++
++        try:
++            loaded_extensions = load_extensions(*(extensions or ()))
++        except ExtensionError:
++            logger.exception("Could not load extensions")
++            return 1
++        static_model, dynamic_model = load_both(
++            package,
++            extensions=loaded_extensions,
++            search_paths=search_paths,
++            find_stubs_package=find_stubs_package,
++        )
++        divergences = list(find_divergences(static_model, dynamic_model))
++        if as_json:
++            print(json.dumps([divergence.as_dict() for divergence in divergences]))
++        else:
++            for divergence in divergences:
++                print(divergence.explain(), file=sys.stderr)
++        if divergences:
++            return 1
++        return 0
++
+     against_path = against_path or package
+     try:
+         loaded_extensions = load_extensions(*(extensions or ()))
+diff --git a/packages/griffelib/src/griffe/__init__.py b/packages/griffelib/src/griffe/__init__.py
+index a559e0f..cd4750a 100644
+--- a/packages/griffelib/src/griffe/__init__.py
++++ b/packages/griffelib/src/griffe/__init__.py
+@@ -178,6 +178,7 @@ from griffe._internal.agents.nodes.values import get_value, safe_get_value
+ from griffe._internal.agents.visitor import Visitor, builtin_decorators, stdlib_decorators, typing_overload, visit
+ from griffe._internal.c3linear import c3linear_merge
+ from griffe._internal.collections import LinesCollection, ModulesCollection
++from griffe._internal.divergence import Divergence, find_divergences
+ from griffe._internal.diff import (
+     AttributeChangedTypeBreakage,
+     AttributeChangedValueBreakage,
+@@ -250,6 +251,7 @@ from griffe._internal.docstrings.utils import docstring_warning, parse_docstring
+ from griffe._internal.encoders import JSONEncoder, json_decoder
+ from griffe._internal.enumerations import (
+     BreakageKind,
++    DivergenceKind,
+     DocstringSectionKind,
+     ExplanationStyle,
+     Kind,
+@@ -345,7 +347,7 @@ from griffe._internal.helpers import (
+     vtree,
+ )
+ from griffe._internal.importer import dynamic_import, sys_path
+-from griffe._internal.loader import GriffeLoader, load, load_git, load_pypi
++from griffe._internal.loader import GriffeLoader, load, load_both, load_git, load_pypi
+ from griffe._internal.logger import Logger, get_logger, logger, patch_loggers
+ from griffe._internal.merger import merge_stubs
+ from griffe._internal.mixins import (
+@@ -384,6 +386,8 @@ __all__ = [
+     "AttributeChangedValueBreakage",
+     "AutoOptions",
+     "Breakage",
++    "Divergence",
++    "DivergenceKind",
+     "BreakageKind",
+     "BuiltinModuleError",
+     "Class",
+@@ -545,6 +549,7 @@ __all__ = [
+     "docstring_warning",
+     "dynamic_import",
+     "find_breaking_changes",
++    "find_divergences",
+     "get__all__",
+     "get_annotation",
+     "get_base_class",
+@@ -564,6 +569,7 @@ __all__ = [
+     "json_decoder",
+     "load",
+     "load_extensions",
++    "load_both",
+     "load_git",
+     "load_pypi",
+     "logger",
+diff --git a/packages/griffelib/src/griffe/_internal/divergence.py b/packages/griffelib/src/griffe/_internal/divergence.py
+new file mode 100644
+index 0000000..d371272
+--- /dev/null
++++ b/packages/griffelib/src/griffe/_internal/divergence.py
+@@ -0,0 +1,513 @@
++# This module defines the divergence report between static and dynamic analysis.
++# The same package is loaded through both the AST visitor and the runtime
++# inspector, and the two resulting trees are compared member by member.
++
++from __future__ import annotations
++
++from typing import TYPE_CHECKING, Any
++
++from griffe._internal.enumerations import DivergenceKind, Kind, ParameterKind
++from griffe._internal.expressions import Expr
++
++if TYPE_CHECKING:
++    from collections.abc import Iterator
++
++    from griffe._internal.models import Attribute, Class, Function, Module, Object
++
++
++_MISSING = "<missing>"
++
++# Module and class attributes that the import machinery or the class
++# machinery inject at runtime; they never appear in source and are not
++# meaningful divergences.
++_RUNTIME_INJECTED = frozenset(
++    {
++        "__all__",
++        "__annotations__",
++        "__builtins__",
++        "__cached__",
++        "__dict__",
++        "__doc__",
++        "__file__",
++        "__firstlineno__",
++        "__loader__",
++        "__module__",
++        "__name__",
++        "__package__",
++        "__path__",
++        "__spec__",
++        "__static_attributes__",
++        "__weakref__",
++    },
++)
++
++
++class Divergence:
++    """A divergence between the static and dynamic model of the same object."""
++
++    def __init__(
++        self,
++        kind: DivergenceKind,
++        object_path: str,
++        static_value: Any = None,
++        dynamic_value: Any = None,
++        details: str = "",
++    ) -> None:
++        """Initialize the divergence.
++
++        Parameters:
++            kind: The kind of divergence.
++            object_path: The path of the diverging object.
++            static_value: The value observed by static analysis.
++            dynamic_value: The value observed by dynamic analysis.
++            details: Additional details about the divergence.
++        """
++        self.kind = kind
++        """The kind of divergence."""
++        self.object_path = object_path
++        """The path of the diverging object."""
++        self.static_value = static_value
++        """The value observed by static analysis."""
++        self.dynamic_value = dynamic_value
++        """The value observed by dynamic analysis."""
++        self.details = details
++        """Additional details about the divergence."""
++
++    def __str__(self) -> str:
++        return self.explain()
++
++    def __repr__(self) -> str:
++        return f"Divergence(kind={self.kind.name}, object_path={self.object_path!r})"
++
++    def as_dict(self, **kwargs: Any) -> dict[str, Any]:  # noqa: ARG002
++        """Return this divergence's data as a dictionary.
++
++        Parameters:
++            **kwargs: Additional serialization options.
++
++        Returns:
++            A dictionary.
++        """
++        data: dict[str, Any] = {
++            "kind": self.kind,
++            "object_path": self.object_path,
++            "static_value": _serialize_value(self.static_value),
++            "dynamic_value": _serialize_value(self.dynamic_value),
++        }
++        if self.details:
++            data["details"] = self.details
++        return data
++
++    def explain(self) -> str:
++        """Explain the divergence by showing both observed values.
++
++        Returns:
++            A one-line explanation.
++        """
++        static = _display_value(self.static_value)
++        dynamic = _display_value(self.dynamic_value)
++        text = f"{self.object_path}: {self.kind.value}: static={static}, dynamic={dynamic}"
++        if self.details:
++            text += f" ({self.details})"
++        return text
++
++
++def _serialize_value(value: Any) -> Any:
++    if isinstance(value, Expr):
++        return str(value)
++    if isinstance(value, (Kind, ParameterKind)):
++        return value.value
++    return value
++
++
++def _display_value(value: Any) -> str:
++    if value is None:
++        return _MISSING
++    if isinstance(value, (Kind, ParameterKind)):
++        return value.value
++    return str(value)
++
++
++def _annotation_text(annotation: str | Expr | None) -> str | None:
++    """Normalize an annotation to comparable text.
++
++    Static annotations are expression trees while dynamic annotations may be
++    plain strings; both are reduced to their canonical textual form with
++    whitespace collapsed.
++    """
++    if annotation is None:
++        return None
++    text = str(annotation)
++    return "".join(text.split())
++
++
++def _default_text(default: str | Expr | None) -> str | None:
++    if default is None:
++        return None
++    return "".join(str(default).split())
++
++
++def _signature_text(func: Function) -> str:
++    """Render a compact, comparable signature for a function."""
++    rendered = []
++    for parameter in func.parameters:
++        if parameter.kind is ParameterKind.var_positional:
++            text = f"*{parameter.name}"
++        elif parameter.kind is ParameterKind.var_keyword:
++            text = f"**{parameter.name}"
++        else:
++            text = parameter.name
++        if parameter.annotation is not None:
++            text += f": {parameter.annotation}"
++        if parameter.default is not None:
++            text += f" = {parameter.default}"
++        rendered.append(text)
++    return "(" + ", ".join(rendered) + ")"
++
++
++def _is_property(obj: Object) -> bool:
++    return obj.is_attribute and "property" in obj.labels or (
++        obj.is_function and "property" in obj.labels
++    )
++
++
++def _has_wrapped_signature(func: Function) -> bool:
++    """Tell whether the runtime signature of a function is meaningless.
++
++    Decorated functions that do not use `functools.wraps` expose the
++    wrapper's `*args, **kwargs` signature at runtime; comparing that against
++    the real static signature would only produce noise.
++    """
++    parameters = func.parameters
++    if len(parameters) != 2:
++        return False
++    kinds = [parameter.kind for parameter in parameters]
++    return kinds == [ParameterKind.var_positional, ParameterKind.var_keyword]
++
++
++def _compare_parameters(
++    path: str,
++    static_func: Function,
++    dynamic_func: Function,
++) -> Iterator[Divergence]:
++    static_params = list(static_func.parameters)
++    dynamic_params = list(dynamic_func.parameters)
++
++    # A runtime signature of exactly (*args, **kwargs) on a decorated function
++    # means the decorator did not preserve the signature; this is reported as
++    # a single signature-erased divergence rather than one per parameter.
++    if _has_wrapped_signature(dynamic_func) and not _has_wrapped_signature(static_func):
++        yield Divergence(
++            DivergenceKind.SIGNATURE_ERASED,
++            path,
++            static_value=_signature_text(static_func),
++            dynamic_value=_signature_text(dynamic_func),
++            details="runtime signature reduced to *args, **kwargs",
++        )
++        return
++
++    static_names = [parameter.name for parameter in static_params]
++    dynamic_names = [parameter.name for parameter in dynamic_params]
++
++    for name in static_names:
++        if name not in dynamic_names:
++            yield Divergence(
++                DivergenceKind.PARAMETER_MISSING,
++                f"{path}({name})",
++                static_value=name,
++                dynamic_value=None,
++            )
++    for name in dynamic_names:
++        if name not in static_names:
++            yield Divergence(
++                DivergenceKind.PARAMETER_MISSING,
++                f"{path}({name})",
++                static_value=None,
++                dynamic_value=name,
++            )
++
++    common = [name for name in static_names if name in dynamic_names]
++
++    static_order = [name for name in static_names if name in common]
++    dynamic_order = [name for name in dynamic_names if name in common]
++    if static_order != dynamic_order:
++        yield Divergence(
++            DivergenceKind.PARAMETER_ORDER,
++            path,
++            static_value=", ".join(static_order),
++            dynamic_value=", ".join(dynamic_order),
++        )
++
++    for name in common:
++        static_param = static_func.parameters[name]
++        dynamic_param = dynamic_func.parameters[name]
++
++        if static_param.kind is not dynamic_param.kind:
++            yield Divergence(
++                DivergenceKind.PARAMETER_KIND,
++                f"{path}({name})",
++                static_value=static_param.kind,
++                dynamic_value=dynamic_param.kind,
++            )
++
++        static_default = _default_text(static_param.default)
++        dynamic_default = _default_text(dynamic_param.default)
++        if static_default != dynamic_default:
++            yield Divergence(
++                DivergenceKind.PARAMETER_DEFAULT,
++                f"{path}({name})",
++                static_value=static_default,
++                dynamic_value=dynamic_default,
++            )
++
++        static_annotation = _annotation_text(static_param.annotation)
++        dynamic_annotation = _annotation_text(dynamic_param.annotation)
++        if (
++            static_annotation is not None
++            and dynamic_annotation is not None
++            and static_annotation != dynamic_annotation
++        ):
++            yield Divergence(
++                DivergenceKind.ANNOTATION,
++                f"{path}({name})",
++                static_value=static_annotation,
++                dynamic_value=dynamic_annotation,
++            )
++
++
++def _compare_functions(
++    path: str,
++    static_func: Function,
++    dynamic_func: Function,
++) -> Iterator[Divergence]:
++    yield from _compare_parameters(path, static_func, dynamic_func)
++
++    static_returns = _annotation_text(static_func.returns)
++    dynamic_returns = _annotation_text(dynamic_func.returns)
++    if (
++        static_returns is not None
++        and dynamic_returns is not None
++        and static_returns != dynamic_returns
++    ):
++        yield Divergence(
++            DivergenceKind.ANNOTATION,
++            path,
++            static_value=static_returns,
++            dynamic_value=dynamic_returns,
++            details="return annotation",
++        )
++
++
++def _compare_attributes(
++    path: str,
++    static_attr: Attribute,
++    dynamic_attr: Attribute,
++) -> Iterator[Divergence]:
++    static_annotation = _annotation_text(static_attr.annotation)
++    dynamic_annotation = _annotation_text(dynamic_attr.annotation)
++    if (
++        static_annotation is not None
++        and dynamic_annotation is not None
++        and static_annotation != dynamic_annotation
++    ):
++        yield Divergence(
++            DivergenceKind.ANNOTATION,
++            path,
++            static_value=static_annotation,
++            dynamic_value=dynamic_annotation,
++        )
++
++
++def _compare_bases(
++    path: str,
++    static_class: Class,
++    dynamic_class: Class,
++) -> Iterator[Divergence]:
++    static_bases = [_base_name(base) for base in static_class.bases]
++    dynamic_bases = [_base_name(base) for base in dynamic_class.bases]
++    normalized_static = [name for name in static_bases if name != "object"]
++    normalized_dynamic = [name for name in dynamic_bases if name != "object"]
++    if normalized_static != normalized_dynamic:
++        yield Divergence(
++            DivergenceKind.BASES_MISMATCH,
++            path,
++            static_value=", ".join(normalized_static) or None,
++            dynamic_value=", ".join(normalized_dynamic) or None,
++        )
++
++
++def _base_name(base: Expr | str) -> str:
++    text = str(base)
++    return text.rsplit(".", 1)[-1]
++
++
++# Methods generated by the dataclass machinery: they exist at runtime but
++# have no statically visible definition on the class body.
++_DATACLASS_GENERATED = frozenset(
++    {
++        "__init__",
++        "__repr__",
++        "__eq__",
++        "__lt__",
++        "__le__",
++        "__gt__",
++        "__ge__",
++        "__hash__",
++        "__match_args__",
++        "__dataclass_fields__",
++        "__dataclass_params__",
++        "__replace__",
++    },
++)
++
++
++def _is_dataclass_generated(name: str, static_parent: Object) -> bool:
++    return name in _DATACLASS_GENERATED and "dataclass" in static_parent.labels
++
++
++def _effective_kind(obj: Object) -> Kind:
++    # Properties are seen as functions statically but as attributes at
++    # runtime; both views describe the same construct, so they are unified
++    # before kinds are compared.
++    if _is_property(obj):
++        return Kind.ATTRIBUTE
++    return obj.kind
++
++
++def _skip_static_only(obj: Object) -> bool:
++    """Static-only members that legitimately have no runtime counterpart."""
++    # Names bound under `if TYPE_CHECKING:` never exist at runtime.
++    if obj.runtime is False:
++        return True
++    # An annotation without a value (`x: int`) declares a name but binds
++    # nothing; such declarations have no runtime counterpart.
++    if obj.is_attribute and obj.value is None:  # ty:ignore[unresolved-attribute]
++        return True
++    return False
++
++
++def _compare_members(
++    static_obj: Object,
++    dynamic_obj: Object,
++) -> Iterator[Divergence]:
++    static_aliases = {name for name, member in static_obj.members.items() if member.is_alias}
++    static_members = {
++        name: member
++        for name, member in static_obj.members.items()
++        if not member.is_alias
++    }
++    dynamic_members = {
++        name: member
++        for name, member in dynamic_obj.members.items()
++        if not member.is_alias
++    }
++
++    for name, static_member in static_members.items():
++        if name not in dynamic_members:
++            if _skip_static_only(static_member):
++                continue
++            yield Divergence(
++                DivergenceKind.MEMBER_MISSING,
++                static_member.path,
++                static_value=static_member.kind,
++                dynamic_value=None,
++            )
++
++    for name, dynamic_member in dynamic_members.items():
++        if name not in static_members:
++            if name in _RUNTIME_INJECTED:
++                continue
++            # A name that is an alias statically is an imported name; the
++            # inspector sees it as a plain member of the module, which is
++            # not a divergence.
++            if name in static_aliases:
++                continue
++            if _is_dataclass_generated(name, static_obj):
++                continue
++            yield Divergence(
++                DivergenceKind.MEMBER_MISSING,
++                dynamic_member.path,
++                static_value=None,
++                dynamic_value=dynamic_member.kind,
++            )
++
++    for name, static_member in static_members.items():
++        dynamic_member = dynamic_members.get(name)
++        if dynamic_member is None:
++            continue
++
++        static_kind = _effective_kind(static_member)
++        dynamic_kind = _effective_kind(dynamic_member)
++        if static_kind is not dynamic_kind:
++            yield Divergence(
++                DivergenceKind.KIND_MISMATCH,
++                static_member.path,
++                static_value=static_kind,
++                dynamic_value=dynamic_kind,
++            )
++            continue
++
++        if static_member.is_function and dynamic_member.is_function:
++            yield from _compare_functions(
++                static_member.path,
++                static_member,  # ty:ignore[invalid-argument-type]
++                dynamic_member,  # ty:ignore[invalid-argument-type]
++            )
++        elif static_member.is_attribute and dynamic_member.is_attribute:
++            yield from _compare_attributes(
++                static_member.path,
++                static_member,  # ty:ignore[invalid-argument-type]
++                dynamic_member,  # ty:ignore[invalid-argument-type]
++            )
++
++        if static_member.is_class and dynamic_member.is_class:
++            yield from _compare_bases(
++                static_member.path,
++                static_member,  # ty:ignore[invalid-argument-type]
++                dynamic_member,  # ty:ignore[invalid-argument-type]
++            )
++
++        if static_member.is_class or static_member.is_module:
++            yield from _compare_members(static_member, dynamic_member)
++
++
++def _compare_exports(
++    static_obj: Module,
++    dynamic_obj: Module,
++) -> Iterator[Divergence]:
++    static_exports = static_obj.exports
++    dynamic_exports = dynamic_obj.exports
++    if static_exports is None and dynamic_exports is None:
++        return
++    static_names = sorted(str(export) for export in static_exports or ())
++    dynamic_names = sorted(str(export) for export in dynamic_exports or ())
++    if static_names != dynamic_names:
++        yield Divergence(
++            DivergenceKind.EXPORTS_MISMATCH,
++            static_obj.path,
++            static_value=", ".join(static_names) or None,
++            dynamic_value=", ".join(dynamic_names) or None,
++        )
++
++
++def find_divergences(
++    static_package: Module,
++    dynamic_package: Module,
++) -> Iterator[Divergence]:
++    """Find divergences between the static and dynamic model of a package.
++
++    The static model comes from AST analysis and the dynamic one from runtime
++    inspection of the same package. Divergences that stem from well-known
++    mechanics (properties appearing as attributes at runtime, names guarded by
++    `TYPE_CHECKING`, decorators erasing signatures) are either unified before
++    comparison or reported under a dedicated kind.
++
++    Parameters:
++        static_package: The package model built by static analysis.
++        dynamic_package: The package model built by dynamic analysis.
++
++    Yields:
++        Divergences between the two models.
++    """
++    yield from _compare_exports(static_package, dynamic_package)
++    yield from _compare_members(static_package, dynamic_package)
+diff --git a/packages/griffelib/src/griffe/_internal/enumerations.py b/packages/griffelib/src/griffe/_internal/enumerations.py
+index 17e346a..a7bc847 100644
+--- a/packages/griffelib/src/griffe/_internal/enumerations.py
++++ b/packages/griffelib/src/griffe/_internal/enumerations.py
+@@ -150,6 +150,31 @@ class BreakageKind(str, Enum):
+     """Base class was removed"""
+ 
+ 
++class DivergenceKind(str, Enum):
++    """Enumeration of the possible divergences between static and dynamic analysis."""
++
++    MEMBER_MISSING = "Member is missing from one analysis"
++    """Member is missing from one analysis"""
++    KIND_MISMATCH = "Object kinds differ between analyses"
++    """Object kinds differ between analyses"""
++    PARAMETER_MISSING = "Parameter is missing from one analysis"
++    """Parameter is missing from one analysis"""
++    PARAMETER_ORDER = "Parameter order differs between analyses"
++    """Parameter order differs between analyses"""
++    PARAMETER_KIND = "Parameter kinds differ between analyses"
++    """Parameter kinds differ between analyses"""
++    PARAMETER_DEFAULT = "Parameter defaults differ between analyses"
++    """Parameter defaults differ between analyses"""
++    ANNOTATION = "Annotations differ between analyses"
++    """Annotations differ between analyses"""
++    SIGNATURE_ERASED = "Runtime signature was erased by a decorator"
++    """Runtime signature was erased by a decorator"""
++    EXPORTS_MISMATCH = "Exported names differ between analyses"
++    """Exported names differ between analyses"""
++    BASES_MISMATCH = "Class bases differ between analyses"
++    """Class bases differ between analyses"""
++
++
+ class Parser(str, Enum):
+     """Enumeration of the different docstring parsers."""
+ 
+diff --git a/packages/griffelib/src/griffe/_internal/loader.py b/packages/griffelib/src/griffe/_internal/loader.py
+index a9c4edc..4c68901 100644
+--- a/packages/griffelib/src/griffe/_internal/loader.py
++++ b/packages/griffelib/src/griffe/_internal/loader.py
+@@ -849,6 +849,72 @@ def load(
+     return result
+ 
+ 
++def load_both(
++    objspec: str | Path | None = None,
++    /,
++    *,
++    submodules: bool = True,
++    try_relative_path: bool = True,
++    extensions: Extensions | None = None,
++    search_paths: Sequence[str | Path] | None = None,
++    docstring_parser: DocstringStyle | Parser | None = None,
++    docstring_options: DocstringOptions | None = None,
++    store_source: bool = True,
++    find_stubs_package: bool = False,
++) -> tuple[Object | Alias, Object | Alias]:
++    """Load a package twice: once statically and once dynamically.
++
++    The static model is built by the AST visitor and the dynamic model by the
++    runtime inspector. Each load uses its own module and line collections so
++    the two trees are fully independent.
++
++    Parameters:
++        objspec: The Python path of an object, or file path to a module.
++        submodules: Whether to recurse on the submodules.
++        try_relative_path: Whether to try finding the module as a relative path.
++        extensions: The extensions to use.
++        search_paths: The paths to search into.
++        docstring_parser: The docstring parser to use. By default, no parsing is done.
++        docstring_options: Docstring parsing options.
++        store_source: Whether to store code source in the lines collection.
++        find_stubs_package: Whether to search for stubs-only package.
++
++    Returns:
++        A tuple with the statically loaded object and the dynamically loaded object.
++    """
++    static_model = load(
++        objspec,
++        submodules=submodules,
++        try_relative_path=try_relative_path,
++        extensions=extensions,
++        search_paths=search_paths,
++        docstring_parser=docstring_parser,
++        docstring_options=docstring_options,
++        lines_collection=LinesCollection(),
++        modules_collection=ModulesCollection(),
++        allow_inspection=False,
++        force_inspection=False,
++        store_source=store_source,
++        find_stubs_package=find_stubs_package,
++    )
++    dynamic_model = load(
++        objspec,
++        submodules=submodules,
++        try_relative_path=try_relative_path,
++        extensions=extensions,
++        search_paths=search_paths,
++        docstring_parser=docstring_parser,
++        docstring_options=docstring_options,
++        lines_collection=LinesCollection(),
++        modules_collection=ModulesCollection(),
++        allow_inspection=True,
++        force_inspection=True,
++        store_source=store_source,
++        find_stubs_package=find_stubs_package,
++    )
++    return static_model, dynamic_model
++
++
+ def load_git(
+     objspec: str | Path | None = None,
+     /,

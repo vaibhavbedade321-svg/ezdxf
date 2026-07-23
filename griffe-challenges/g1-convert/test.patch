@@ -1,0 +1,726 @@
+diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
+new file mode 100644
+index 0000000..612a74c
+--- /dev/null
++++ b/packages/griffelib/tests/test_docstring_emitters.py
+@@ -0,0 +1,669 @@
++"""Tests for docstring composition and dialect conversion."""
++
++from __future__ import annotations
++
++import json
++import re
++from textwrap import dedent
++
++import pytest
++
++import griffe
++from griffe import (
++    Docstring,
++    JSONEncoder,
++    Parser,
++    infer_docstring_style,
++    temporary_visited_module,
++)
++
++
++def _model(sections: list) -> str:
++    return json.dumps(list(sections), cls=JSONEncoder, sort_keys=True)
++
++
++def _sections(text: str, style: str) -> list:
++    return Docstring(dedent(text)).parse(style, warnings=False)
++
++
++GOOGLE_FULL = """
++Summary line.
++
++Some longer body text.
++
++Parameters:
++    x (int): The X.
++    y (str): The Y with
++        continuation text.
++
++Other Parameters:
++    z (bool): The Z.
++
++Returns:
++    int: The result.
++
++Yields:
++    str: Items produced.
++
++Receives:
++    bytes: Items consumed.
++
++Raises:
++    ValueError: When bad.
++    TypeError: When wrong.
++
++Warns:
++    UserWarning: Sometimes.
++
++Attributes:
++    attr (bool): The attribute.
++
++Note:
++    A note.
++"""
++
++NUMPY_FULL = """
++Summary.
++
++Parameters
++----------
++x : int
++    The X.
++y : str, default=hi
++    The Y.
++
++Returns
++-------
++int
++    The result.
++
++Yields
++------
++str
++    Items.
++
++Raises
++------
++ValueError
++    When bad.
++
++Warns
++-----
++UserWarning
++    Sometimes.
++
++Attributes
++----------
++attr : bool
++    The attribute.
++
++Examples
++--------
++Text before.
++
++>>> print(1)
++1
++
++Deprecated
++----------
++1.2
++    Use other.
++"""
++
++SPHINX_FULL = """
++Summary.
++
++:param x: The X.
++:type x: int
++:returns: The result.
++:rtype: int
++:raises ValueError: When bad.
++:var attr: The attribute.
++:vartype attr: bool
++"""
++
++
++def test_composers_registry_covers_concrete_styles() -> None:
++    assert set(griffe.composers) == {Parser.google, Parser.numpy, Parser.sphinx}
++    sections = _sections(GOOGLE_FULL, "google")
++    for style, composer in griffe.composers.items():
++        inferred, _ = infer_docstring_style(Docstring(composer(sections)))
++        assert inferred is style
++
++
++def test_dialect_composers_produce_their_own_dialect() -> None:
++    sections = _sections(GOOGLE_FULL, "google")
++    for func, style in (
++        (griffe.compose_google, Parser.google),
++        (griffe.compose_numpy, Parser.numpy),
++        (griffe.compose_sphinx, Parser.sphinx),
++    ):
++        inferred, _ = infer_docstring_style(Docstring(func(sections)))
++        assert inferred is style
++
++
++def test_public_api_is_exported_from_griffe() -> None:
++    for name in ("compose", "composers", "compose_google", "compose_numpy", "compose_sphinx", "rewrite_source"):
++        assert hasattr(griffe, name)
++
++
++def test_compose_rejects_unknown_style() -> None:
++    with pytest.raises(ValueError):
++        griffe.compose([], "fortran")
++
++
++def test_compose_rejects_auto_style() -> None:
++    with pytest.raises(ValueError):
++        griffe.compose([], Parser.auto)
++
++
++def test_compose_accepts_string_style() -> None:
++    sections = _sections("Just text.", "google")
++    assert griffe.compose(sections, "google").strip("\n") == "Just text."
++
++
++def test_compose_accepts_parser_member() -> None:
++    sections = _sections("Just text.", "google")
++    assert griffe.compose(sections, Parser.google).strip("\n") == "Just text."
++
++
++def test_google_roundtrip_preserves_model() -> None:
++    sections = _sections(GOOGLE_FULL, "google")
++    composed = griffe.compose(sections, "google")
++    reparsed = Docstring(composed).parse("google", warnings=False)
++    assert _model(sections) == _model(reparsed)
++
++
++def test_google_compose_is_idempotent() -> None:
++    sections = _sections(GOOGLE_FULL, "google")
++    once = griffe.compose(sections, "google")
++    twice = griffe.compose(Docstring(once).parse("google", warnings=False), "google")
++    assert once == twice
++
++
++def test_numpy_roundtrip_preserves_model() -> None:
++    sections = _sections(NUMPY_FULL, "numpy")
++    composed = griffe.compose(sections, "numpy")
++    reparsed = Docstring(composed).parse("numpy", warnings=False)
++    assert _model(sections) == _model(reparsed)
++
++
++def test_numpy_compose_is_idempotent() -> None:
++    sections = _sections(NUMPY_FULL, "numpy")
++    once = griffe.compose(sections, "numpy")
++    twice = griffe.compose(Docstring(once).parse("numpy", warnings=False), "numpy")
++    assert once == twice
++
++
++def test_sphinx_roundtrip_preserves_model() -> None:
++    sections = _sections(SPHINX_FULL, "sphinx")
++    composed = griffe.compose(sections, "sphinx")
++    reparsed = Docstring(composed).parse("sphinx", warnings=False)
++    assert _model(sections) == _model(reparsed)
++
++
++def test_sphinx_compose_is_idempotent() -> None:
++    sections = _sections(SPHINX_FULL, "sphinx")
++    once = griffe.compose(sections, "sphinx")
++    twice = griffe.compose(Docstring(once).parse("sphinx", warnings=False), "sphinx")
++    assert once == twice
++
++
++def test_sphinx_multiline_descriptions_roundtrip() -> None:
++    source = """
++    Summary.
++
++    :param x: first line
++        second line
++    :type x: int
++    :returns: result first
++        result second
++    :rtype: bool
++    """
++    sections = _sections(source, "sphinx")
++    composed = griffe.compose(sections, "sphinx")
++    reparsed = Docstring(composed).parse("sphinx", warnings=False)
++    assert _model(sections) == _model(reparsed)
++    parameters = next(s for s in reparsed if s.kind.value == "parameters")
++    assert parameters.value[0].description == "first line\nsecond line"
++
++
++def test_multi_item_returns_survive_sphinx_conversion() -> None:
++    numpy_src = """
++    Summary.
++
++    Returns
++    -------
++    first : int
++        The first value.
++    second : str
++        The second value.
++    """
++    sections = _sections(numpy_src, "numpy")
++    composed = griffe.compose(sections, "sphinx")
++    assert "The first value." in composed
++    assert "The second value." in composed
++    reparsed = Docstring(composed).parse("sphinx", warnings=False)
++    recomposed = griffe.compose(reparsed, "sphinx")
++    assert recomposed == griffe.compose(
++        Docstring(recomposed).parse("sphinx", warnings=False), "sphinx"
++    )
++
++
++def test_numpy_titled_section_keeps_title_in_heading() -> None:
++    from griffe import DocstringRaise, DocstringSectionRaises
++
++    section = DocstringSectionRaises(
++        [DocstringRaise(annotation="ValueError", description="When bad.")],
++        title="Errors",
++    )
++    composed = griffe.compose([section], "numpy")
++    assert re.search(r"^Errors\n-+$", composed, flags=re.MULTILINE)
++
++
++def test_numpy_default_marker_roundtrip() -> None:
++    sections = _sections(NUMPY_FULL, "numpy")
++    composed = griffe.compose(sections, "numpy")
++    assert "y : str, default=hi" in composed
++
++
++def test_google_to_numpy_conversion_reparses_as_same_model_kinds() -> None:
++    google_src = """
++    Summary.
++
++    Parameters:
++        x (int): The X.
++
++    Returns:
++        int: The result.
++
++    Raises:
++        ValueError: When bad.
++
++    Attributes:
++        attr (bool): The attribute.
++    """
++    sections = _sections(google_src, "google")
++    converted = griffe.compose(sections, "numpy")
++    reparsed = Docstring(converted).parse("numpy", warnings=False)
++    original_kinds = [section.kind for section in sections]
++    new_kinds = [section.kind for section in reparsed]
++    assert original_kinds == new_kinds
++
++
++def test_note_admonition_survives_numpy_conversion_as_text() -> None:
++    sections = _sections(GOOGLE_FULL, "google")
++    converted = griffe.compose(sections, "numpy")
++    assert "A note." in converted
++
++
++def test_numpy_to_google_conversion_keeps_deprecated_content() -> None:
++    sections = _sections(NUMPY_FULL, "numpy")
++    converted = griffe.compose(sections, "google")
++    assert "1.2" in converted
++    assert "Use other." in converted
++
++
++def test_converted_output_stays_stable_in_target_dialect() -> None:
++    sections = _sections(GOOGLE_FULL, "google")
++    for style in ("numpy", "sphinx"):
++        converted = griffe.compose(sections, style)
++        reparsed = Docstring(converted).parse(style, warnings=False)
++        recomposed = griffe.compose(reparsed, style)
++        assert recomposed == griffe.compose(
++            Docstring(recomposed).parse(style, warnings=False), style
++        )
++
++
++def test_composed_output_classifies_as_target_dialect() -> None:
++    sections = _sections(GOOGLE_FULL, "google")
++    for style in ("google", "numpy", "sphinx"):
++        composed = griffe.compose(sections, style)
++        inferred, _ = infer_docstring_style(Docstring(composed))
++        assert inferred is Parser(style)
++
++
++def test_sphinx_preserves_untranslatable_sections_as_text() -> None:
++    sections = _sections(GOOGLE_FULL, "google")
++    composed = griffe.compose(sections, "sphinx")
++    assert "Items produced." in composed
++    assert "UserWarning" in composed
++
++
++def test_sphinx_annotations_survive_reparse() -> None:
++    google_src = """
++    Summary.
++
++    Parameters:
++        x (int): The X.
++
++    Raises:
++        ValueError: When bad.
++
++    Attributes:
++        attr (bool): The attribute.
++    """
++    sections = _sections(google_src, "google")
++    composed = griffe.compose(sections, "sphinx")
++    reparsed = Docstring(composed).parse("sphinx", warnings=False)
++    parameters = next(s for s in reparsed if s.kind.value == "parameters")
++    x = next(el for el in parameters.value if el.name == "x")
++    assert str(x.annotation) == "int"
++    assert "The X." in x.description
++    raises = next(s for s in reparsed if s.kind.value == "raises")
++    assert any(str(el.annotation) == "ValueError" for el in raises.value)
++    attributes = next(s for s in reparsed if s.kind.value == "attributes")
++    attr = next(el for el in attributes.value if el.name == "attr")
++    assert str(attr.annotation) == "bool"
++
++
++def test_sphinx_return_annotation_survives_reparse() -> None:
++    sections = _sections(SPHINX_FULL, "sphinx")
++    composed = griffe.compose(sections, "sphinx")
++    reparsed = Docstring(composed).parse("sphinx", warnings=False)
++    returns = next(s for s in reparsed if s.kind.value == "returns")
++    element = returns.value[0]
++    assert str(element.annotation) == "int"
++    assert "The result." in element.description
++
++
++def test_google_types_use_parenthesized_syntax() -> None:
++    sections = _sections(NUMPY_FULL, "numpy")
++    composed = griffe.compose(sections, "google")
++    assert "x (int): The X." in composed
++
++
++def test_numpy_types_use_colon_syntax() -> None:
++    sections = _sections(GOOGLE_FULL, "google")
++    composed = griffe.compose(sections, "numpy")
++    assert "x : int" in composed
++
++
++def test_multiline_descriptions_survive_google_roundtrip() -> None:
++    sections = _sections(GOOGLE_FULL, "google")
++    composed = griffe.compose(sections, "google")
++    reparsed = Docstring(composed).parse("google", warnings=False)
++    parameters = next(s for s in reparsed if s.kind.value == "parameters")
++    y = next(el for el in parameters.value if el.name == "y")
++    assert "continuation text." in y.description
++
++
++REWRITE_CODE = '''
++"""Module summary.
++
++Parameters:
++    cfg (str): Config path.
++"""
++
++
++def run(x, y=1):
++    r"""Run the thing.
++
++    Parameters:
++        x (int): The X.
++        y (int): The Y.
++
++    Returns:
++        bool: Done.
++    """
++
++
++class Thing:
++    """Class summary."""
++
++    def method(self):
++        \'\'\'Method doc.
++
++        Raises:
++            ValueError: Bad.
++        \'\'\'
++'''
++
++
++def test_rewrite_source_converts_all_docstrings() -> None:
++    code = dedent(REWRITE_CODE)
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    assert re.search(r"^Parameters\n-+$", result, flags=re.MULTILINE)
++    assert re.search(r"^    Returns\n    -+$", result, flags=re.MULTILINE)
++    assert re.search(r"^        Raises\n        -+$", result, flags=re.MULTILINE)
++    assert "Parameters:" not in result
++
++
++def test_rewrite_source_preserves_prefix_and_quotes() -> None:
++    code = dedent(REWRITE_CODE)
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    assert 'r"""Run the thing.' in result
++    assert "'''Method doc." in result
++
++
++def test_rewrite_source_preserves_non_docstring_bytes() -> None:
++    code = dedent(REWRITE_CODE)
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    assert "def run(x, y=1):" in result
++    assert "class Thing:" in result
++    assert "def method(self):" in result
++
++
++def test_rewrite_source_preserves_indentation() -> None:
++    code = dedent(REWRITE_CODE)
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    assert re.search(r"^    Parameters\n    -+$", result, flags=re.MULTILINE)
++    assert re.search(r"^        Raises\n        -+$", result, flags=re.MULTILINE)
++
++
++def test_rewrite_source_result_reparses_as_target_style() -> None:
++    code = dedent(REWRITE_CODE)
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    with temporary_visited_module(result) as module:
++        docstring = module["run"].docstring
++        sections = docstring.parse("numpy", warnings=False)
++        kinds = [section.kind.value for section in sections]
++    assert "parameters" in kinds
++    assert "returns" in kinds
++
++
++def test_rewrite_source_infers_style_when_source_style_omitted() -> None:
++    code = dedent(REWRITE_CODE)
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "numpy")
++    assert re.search(r"^Parameters\n-+$", result, flags=re.MULTILINE)
++    assert re.search(r"^    Parameters\n    -+$", result, flags=re.MULTILINE)
++    assert "Parameters:" not in result
++
++
++def test_rewrite_source_keeps_single_quotes_for_single_line_docstrings() -> None:
++    code = dedent(
++        '''
++        def f():
++            'Single line.'
++        '''
++    )
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "google", source_style="google")
++    assert "'Single line.'" in result
++
++
++def test_rewrite_source_widens_single_quotes_when_text_becomes_multiline() -> None:
++    code = dedent(
++        """
++        def f():
++            ':returns: The result.'
++        """
++    )
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="sphinx")
++    assert "'''" in result
++    assert '"""' not in result
++    assert re.search(r"^    Returns\n    -+$", result, flags=re.MULTILINE)
++
++
++def test_rewrite_source_preserves_trailing_comment_after_docstring() -> None:
++    code = dedent(
++        """
++        def f():
++            \"\"\"Doc.\"\"\"  # keep me
++            return 1
++        """
++    )
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "google", source_style="google")
++    assert "# keep me" in result
++    assert "return 1" in result
++
++
++def test_rewrite_source_switches_delimiter_for_embedded_quotes() -> None:
++    code = dedent(
++        """
++        def f():
++            \'\'\'Contains three double quotes: \"\"\" inside.\'\'\'
++        """
++    )
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "google", source_style="google")
++    compile(result, "<rewritten>", "exec")
++    assert 'three double quotes' in result
++
++
++def test_google_alias_titles_are_preserved_when_model_carries_them() -> None:
++    from griffe import DocstringSectionParameters
++
++    section = DocstringSectionParameters([], title="Args")
++    composed = griffe.compose([section], "google")
++    assert composed.startswith("Args:")
++
++
++def test_rewrite_source_keeps_raw_docstring_with_embedded_delimiters_valid() -> None:
++    code = (
++        dedent(
++            '''
++def f(x):
++    rQQQDoc.
++
++    Args:
++        x (int): has TTT inside and ends with "quote"
++    QQQ
++'''
++        )
++        .replace("QQQ", '"' * 3)
++        .replace("TTT", "'" * 3)
++    )
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "google", source_style="google")
++    compile(result, "<rewritten>", "exec")
++    assert "ends with" in result
++
++
++def test_rewrite_source_keeps_raw_docstring_with_trailing_backslash_valid() -> None:
++    code = (
++        dedent(
++            '''
++def f(x):
++    rQQQDoc.
++
++    Args:
++        x (int): trailing slash BSL
++    QQQ
++'''
++        )
++        .replace("QQQ", '"' * 3)
++        .replace("BSL", chr(92))
++    )
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "google", source_style="google")
++    compile(result, "<rewritten>", "exec")
++    assert "trailing slash" in result
++
++
++def test_rewrite_source_is_stable_when_already_converted() -> None:
++    code = dedent(REWRITE_CODE)
++    with temporary_visited_module(code) as module:
++        converted = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    with temporary_visited_module(converted) as module:
++        converted_again = griffe.rewrite_source(converted, module, "numpy", source_style="numpy")
++    assert converted == converted_again
++
++
++def _run_convert(tmp_path, code: str, *args: str) -> tuple[int, str]:
++    import io
++    from contextlib import redirect_stdout
++
++    from griffecli import main
++
++    package = tmp_path / "cvtpkg"
++    package.mkdir()
++    (package / "__init__.py").write_text(dedent(code), encoding="utf8")
++    buffer = io.StringIO()
++    with redirect_stdout(buffer):
++        exit_code = main(["convert", "cvtpkg", "-s", str(tmp_path), *args])
++    return exit_code, buffer.getvalue()
++
++
++CLI_CODE = '''
++"""Package doc.
++
++Parameters:
++    cfg (str): Config path.
++"""
++'''
++
++
++def test_cli_convert_check_reports_pending_changes(tmp_path) -> None:
++    exit_code, output = _run_convert(tmp_path, CLI_CODE, "-t", "numpy", "--check")
++    assert exit_code == 1
++    assert output == ""
++    content = (tmp_path / "cvtpkg" / "__init__.py").read_text(encoding="utf8")
++    assert content == dedent(CLI_CODE)
++
++
++def test_cli_convert_check_passes_when_nothing_to_change(tmp_path) -> None:
++    code = '''
++"""Package doc.
++
++Parameters
++----------
++cfg : str
++    Config path.
++"""
++'''
++    exit_code, _ = _run_convert(tmp_path, code, "-t", "numpy", "--check", "-d", "numpy")
++    assert exit_code == 0
++
++
++def test_cli_convert_diff_prints_unified_diff(tmp_path) -> None:
++    exit_code, output = _run_convert(tmp_path, CLI_CODE, "-t", "numpy", "--diff")
++    assert exit_code == 0
++    assert "---" in output
++    assert "+++" in output
++    assert "+Parameters" in output
++    content = (tmp_path / "cvtpkg" / "__init__.py").read_text(encoding="utf8")
++    assert content == dedent(CLI_CODE)
++
++
++def test_cli_convert_docstyle_override_drives_parsing(tmp_path) -> None:
++    sphinx_code = """
++\"\"\"Package doc.
++
++:param cfg: Config path.
++:type cfg: str
++\"\"\"
++"""
++    exit_code, _ = _run_convert(
++        tmp_path, sphinx_code, "-t", "numpy", "-d", "sphinx", "--in-place"
++    )
++    assert exit_code == 0
++    content = (tmp_path / "cvtpkg" / "__init__.py").read_text(encoding="utf8")
++    assert re.search(r"^Parameters\n-+$", content, flags=re.MULTILINE)
++    assert "cfg : str" in content
++
++
++def test_cli_convert_in_place_rewrites_files(tmp_path) -> None:
++    exit_code, _ = _run_convert(tmp_path, CLI_CODE, "-t", "numpy", "--in-place")
++    assert exit_code == 0
++    content = (tmp_path / "cvtpkg" / "__init__.py").read_text(encoding="utf8")
++    assert re.search(r"^Parameters\n-+$", content, flags=re.MULTILINE)
++    assert "Parameters:" not in content
+diff --git a/test.sh b/test.sh
+new file mode 100755
+index 0000000..431c7ff
+--- /dev/null
++++ b/test.sh
+@@ -0,0 +1,45 @@
++#!/usr/bin/env bash
++set -uo pipefail
++
++OUTPUT_PATH=""
++MODE=""
++
++while [[ $# -gt 0 ]]; do
++    case "$1" in
++        --output_path)
++            OUTPUT_PATH="$2"
++            shift 2
++            ;;
++        base|new)
++            MODE="$1"
++            shift
++            ;;
++        *)
++            echo "unknown argument: $1" >&2
++            exit 2
++            ;;
++    esac
++done
++
++if [[ -z "$OUTPUT_PATH" || -z "$MODE" ]]; then
++    echo "usage: test.sh --output_path <path> {base|new}" >&2
++    exit 2
++fi
++
++cd "$(dirname "$0")/packages/griffelib"
++
++NEW_TESTS="tests/test_docstring_emitters.py"
++
++case "$MODE" in
++    base)
++        python3 -m pytest tests/ -o addopts= -v \
++            --ignore=tests/test_stdlib.py \
++            --ignore=tests/test_api.py \
++            --ignore="$NEW_TESTS" \
++            --junitxml="$OUTPUT_PATH"
++        ;;
++    new)
++        python3 -m pytest "$NEW_TESTS" -o addopts= -v \
++            --junitxml="$OUTPUT_PATH"
++        ;;
++esac

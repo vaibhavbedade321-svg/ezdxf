@@ -1,0 +1,18 @@
+griffe challenge pack — Project Olympus submissions
+
+Repo:   https://github.com/mkdocstrings/griffe
+Commit: 6b3caab7ce4fdcb1c9386937dad17510d35a3321
+Type:   feature request (all)
+
+Per submission, paste:
+  problem.md      -> description
+  test.patch      -> test patch
+  solution.patch  -> solution patch
+  Dockerfile      -> dockerfile (identical across all challenges)
+
+Challenges:
+  g1-convert    Docstring composition + style conversion   (~677 LOC, 44 tests)
+  g2-divergence Static-vs-dynamic divergence report        (~513 LOC, 30 tests)
+  g3-surface    Public API surface audit                   (~451 LOC, 36 tests)
+  g4-overrides  Override compatibility check               (~398 LOC, 34 tests)
+  g6-semver     Semantic version bump recommendation       (~456 LOC, 34 tests)

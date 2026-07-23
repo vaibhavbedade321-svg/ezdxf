@@ -1,0 +1,594 @@
+diff --git a/packages/griffecli/src/griffecli/_internal/cli.py b/packages/griffecli/src/griffecli/_internal/cli.py
+index 232c1e7..00d769f 100644
+--- a/packages/griffecli/src/griffecli/_internal/cli.py
++++ b/packages/griffecli/src/griffecli/_internal/cli.py
+@@ -132,7 +132,7 @@ def get_parser() -> argparse.ArgumentParser:
+         An argparse parser.
+     """
+     from griffe._internal import debug  # noqa: PLC0415
+-    from griffe._internal.enumerations import ExplanationStyle, Parser  # noqa: PLC0415
++    from griffe._internal.enumerations import ExplanationStyle, Parser, SurfaceIssueKind  # noqa: PLC0415
+ 
+     usage = "%(prog)s [GLOBAL_OPTS...] COMMAND [COMMAND_OPTS...]"
+     description = "Signatures for entire Python programs. "
+@@ -326,6 +326,35 @@ def get_parser() -> argparse.ArgumentParser:
+     check_options.add_argument("-f", "--format", dest="style", choices=formats, default=None, help="Output format.")
+     add_common_options(check_parser)
+ 
++    # ========= API PARSER ========= #
++    api_parser = add_subparser("api", "Audit the public API surface of a package.")
++    api_options = api_parser.add_argument_group(title="API options")
++    api_options.add_argument("package", metavar="PACKAGE", help="Package to find, load and audit.")
++    api_format = api_options.add_mutually_exclusive_group()
++    api_format.add_argument(
++        "--json",
++        dest="as_json",
++        action="store_true",
++        default=False,
++        help="Output the audit report as JSON.",
++    )
++    api_format.add_argument(
++        "--markdown",
++        dest="as_markdown",
++        action="store_true",
++        default=False,
++        help="Output the audit report as Markdown.",
++    )
++    api_options.add_argument(
++        "--fail-on",
++        dest="fail_on",
++        action="append",
++        choices=[kind.name.lower().replace("_", "-") for kind in SurfaceIssueKind],
++        help="Exit nonzero when issues of this category are found. "
++        "May be repeated. By default any issue fails the audit.",
++    )
++    add_common_options(api_parser)
++
+     return parser
+ 
+ 
+@@ -587,6 +616,81 @@ def check(
+     return 0
+ 
+ 
++def api(
++    package: str | Path,
++    *,
++    as_json: bool = False,
++    as_markdown: bool = False,
++    fail_on: Sequence[str] | None = None,
++    search_paths: Sequence[str | Path] | None = None,
++    append_sys_path: bool = False,
++    extensions: Sequence[str | dict[str, Any] | Extension | type[Extension]] | None = None,
++    find_stubs_package: bool = False,
++    allow_inspection: bool = True,
++    force_inspection: bool = False,
++) -> int:
++    """Audit the public API surface of a package.
++
++    Parameters:
++        package: The package to load and audit.
++        as_json: Whether to output the report as JSON.
++        as_markdown: Whether to output the report as Markdown.
++        fail_on: Issue categories that fail the audit. All categories by default.
++        search_paths: The paths to search into.
++        append_sys_path: Whether to append the contents of `sys.path` to the search paths.
++        extensions: The extensions to use.
++        find_stubs_package: Whether to search for stubs-only package.
++        allow_inspection: Whether to allow inspecting modules when visiting them is not possible.
++        force_inspection: Whether to force using dynamic analysis when loading data.
++
++    Returns:
++        `0` when the audit passes, `1` when gated issues are found.
++    """
++    from griffe._internal.encoders import JSONEncoder  # noqa: PLC0415
++    from griffe._internal.exceptions import ExtensionError  # noqa: PLC0415
++    from griffe._internal.extensions.base import load_extensions  # noqa: PLC0415
++    from griffe._internal.loader import load  # noqa: PLC0415
++    from griffe._internal.logger import logger  # noqa: PLC0415
++    from griffe._internal.surface import audit_surface  # noqa: PLC0415
++
++    search_paths = list(search_paths) if search_paths else []
++    if append_sys_path:
++        search_paths.extend(sys.path)
++
++    try:
++        loaded_extensions = load_extensions(*(extensions or ()))
++    except ExtensionError:
++        logger.exception("Could not load extensions")
++        return 1
++
++    module = load(
++        package,
++        extensions=loaded_extensions,
++        search_paths=search_paths,
++        allow_inspection=allow_inspection,
++        force_inspection=force_inspection,
++        find_stubs_package=find_stubs_package,
++        resolve_aliases=True,
++    )
++    report = audit_surface(module)
++
++    if as_json:
++        print(json.dumps(report.as_dict(), cls=JSONEncoder))
++    elif as_markdown and report.issues:
++        print(report.render_markdown(), file=sys.stderr)
++    elif report.issues:
++        print(report.render_text(), file=sys.stderr)
++
++    if fail_on:
++        gated = {name.replace("-", "_").upper() for name in fail_on}
++        failing = [issue for issue in report.issues if issue.kind.name in gated]
++    else:
++        failing = report.issues
++    if failing:
++        return 1
++    return 0
++
++
+ def main(args: list[str] | None = None) -> int:
+     """Run the main program.
+ 
+@@ -623,5 +727,5 @@ def main(args: list[str] | None = None) -> int:
+     sys.setrecursionlimit(max(2000, sys.getrecursionlimit()))
+ 
+     # Run subcommand.
+-    commands: dict[str, Callable[..., int]] = {"check": check, "dump": dump}
++    commands: dict[str, Callable[..., int]] = {"api": api, "check": check, "dump": dump}
+     return commands[subcommand](**opts_dict)
+diff --git a/packages/griffelib/src/griffe/__init__.py b/packages/griffelib/src/griffe/__init__.py
+index a559e0f..18739e4 100644
+--- a/packages/griffelib/src/griffe/__init__.py
++++ b/packages/griffelib/src/griffe/__init__.py
+@@ -178,6 +178,7 @@ from griffe._internal.agents.nodes.values import get_value, safe_get_value
+ from griffe._internal.agents.visitor import Visitor, builtin_decorators, stdlib_decorators, typing_overload, visit
+ from griffe._internal.c3linear import c3linear_merge
+ from griffe._internal.collections import LinesCollection, ModulesCollection
++from griffe._internal.surface import SurfaceIssue, SurfaceReport, audit_surface
+ from griffe._internal.diff import (
+     AttributeChangedTypeBreakage,
+     AttributeChangedValueBreakage,
+@@ -257,6 +258,7 @@ from griffe._internal.enumerations import (
+     ObjectKind,
+     ParameterKind,
+     Parser,
++    SurfaceIssueKind,
+     TypeParameterKind,
+ )
+ from griffe._internal.exceptions import (
+@@ -384,6 +386,10 @@ __all__ = [
+     "AttributeChangedValueBreakage",
+     "AutoOptions",
+     "Breakage",
++    "SurfaceIssue",
++    "SurfaceIssueKind",
++    "SurfaceReport",
++    "audit_surface",
+     "BreakageKind",
+     "BuiltinModuleError",
+     "Class",
+diff --git a/packages/griffelib/src/griffe/_internal/enumerations.py b/packages/griffelib/src/griffe/_internal/enumerations.py
+index 17e346a..d5a2ae1 100644
+--- a/packages/griffelib/src/griffe/_internal/enumerations.py
++++ b/packages/griffelib/src/griffe/_internal/enumerations.py
+@@ -150,6 +150,25 @@ class BreakageKind(str, Enum):
+     """Base class was removed"""
+ 
+ 
++class SurfaceIssueKind(str, Enum):
++    """Enumeration of the possible public API surface issues."""
++
++    PRIVATE_ORIGIN = "Public name is defined in a private module"
++    """Public name is defined in a private module"""
++    DANGLING_EXPORT = "Exported name resolves to nothing"
++    """Exported name resolves to nothing"""
++    UNDOCUMENTED = "Public object has no docstring"
++    """Public object has no docstring"""
++    DUPLICATE_EXPOSURE = "Object is reachable by several public paths"
++    """Object is reachable by several public paths"""
++    CYCLIC_ALIAS = "Alias chain forms a cycle"
++    """Alias chain forms a cycle"""
++    PRIVATE_LEAK = "Public signature references a private object"
++    """Public signature references a private object"""
++    INCONSISTENT_ALL = "Public definition is missing from its module's __all__"
++    """Public definition is missing from its module's __all__"""
++
++
+ class Parser(str, Enum):
+     """Enumeration of the different docstring parsers."""
+ 
+diff --git a/packages/griffelib/src/griffe/_internal/surface.py b/packages/griffelib/src/griffe/_internal/surface.py
+new file mode 100644
+index 0000000..35fe131
+--- /dev/null
++++ b/packages/griffelib/src/griffe/_internal/surface.py
+@@ -0,0 +1,389 @@
++# This module computes the public API surface of a package and audits it.
++# Re-export chains are resolved to their final targets so the audit sees
++# the objects a user actually reaches through public paths.
++
++from __future__ import annotations
++
++from typing import TYPE_CHECKING, Any
++
++from griffe._internal.enumerations import SurfaceIssueKind
++from griffe._internal.exceptions import AliasResolutionError, CyclicAliasError, NameResolutionError
++from griffe._internal.expressions import Expr, ExprName
++
++if TYPE_CHECKING:
++    from collections.abc import Iterator
++
++    from griffe._internal.models import Alias, Module, Object
++
++
++class SurfaceIssue:
++    """An issue found while auditing the public surface of a package."""
++
++    def __init__(
++        self,
++        kind: SurfaceIssueKind,
++        public_path: str,
++        details: str = "",
++    ) -> None:
++        """Initialize the issue.
++
++        Parameters:
++            kind: The kind of issue.
++            public_path: The public path at which the issue appears.
++            details: Additional details about the issue.
++        """
++        self.kind = kind
++        """The kind of issue."""
++        self.public_path = public_path
++        """The public path at which the issue appears."""
++        self.details = details
++        """Additional details about the issue."""
++
++    def __str__(self) -> str:
++        text = f"{self.public_path}: {self.kind.value}"
++        if self.details:
++            text += f": {self.details}"
++        return text
++
++    def __repr__(self) -> str:
++        return f"SurfaceIssue(kind={self.kind.name}, public_path={self.public_path!r})"
++
++    def as_dict(self, **kwargs: Any) -> dict[str, Any]:  # noqa: ARG002
++        """Return this issue's data as a dictionary.
++
++        Parameters:
++            **kwargs: Additional serialization options.
++
++        Returns:
++            A dictionary.
++        """
++        data: dict[str, Any] = {
++            "kind": self.kind,
++            "public_path": self.public_path,
++        }
++        if self.details:
++            data["details"] = self.details
++        return data
++
++
++class SurfaceReport:
++    """The result of auditing a package's public surface."""
++
++    def __init__(
++        self,
++        package: str,
++        issues: list[SurfaceIssue],
++        canonical_paths: dict[str, str],
++    ) -> None:
++        """Initialize the report.
++
++        Parameters:
++            package: The name of the audited package.
++            issues: The issues found.
++            canonical_paths: A mapping from object canonical paths to their
++                chosen canonical public path.
++        """
++        self.package = package
++        """The name of the audited package."""
++        self.issues = issues
++        """The issues found."""
++        self.canonical_paths = canonical_paths
++        """The chosen canonical public path per reachable object."""
++
++    def issues_of_kind(self, kind: SurfaceIssueKind) -> list[SurfaceIssue]:
++        """Return the issues of the given kind.
++
++        Parameters:
++            kind: The kind to filter on.
++
++        Returns:
++            The matching issues.
++        """
++        return [issue for issue in self.issues if issue.kind is kind]
++
++    @property
++    def counts(self) -> dict[str, int]:
++        """The number of issues per category, for categories that have issues."""
++        result: dict[str, int] = {}
++        for issue in self.issues:
++            result[issue.kind.name] = result.get(issue.kind.name, 0) + 1
++        return result
++
++    def render_text(self) -> str:
++        """Render the report as grouped, human-readable text.
++
++        Issues are grouped by category, each group preceded by the category
++        description and its count, and an empty report renders as a single
++        line saying the surface is clean.
++
++        Returns:
++            The rendered report.
++        """
++        if not self.issues:
++            return f"{self.package}: public API surface is clean"
++        lines = []
++        for kind in SurfaceIssueKind:
++            group = self.issues_of_kind(kind)
++            if not group:
++                continue
++            if lines:
++                lines.append("")
++            lines.append(f"{kind.value} ({len(group)})")
++            for issue in group:
++                line = f"  {issue.public_path}"
++                if issue.details:
++                    line += f": {issue.details}"
++                lines.append(line)
++        return "\n".join(lines)
++
++    def render_markdown(self) -> str:
++        """Render the report as Markdown.
++
++        Issues are grouped under one heading per category with the issue
++        count, one bullet per issue. A clean surface renders as a single
++        paragraph saying the surface is clean.
++
++        Returns:
++            The Markdown report.
++        """
++        if not self.issues:
++            return f"**{self.package}**: public API surface is clean"
++        lines: list[str] = [f"# API surface report: {self.package}", ""]
++        current: SurfaceIssueKind | None = None
++        for issue in self.issues:
++            if issue.kind is not current:
++                current = issue.kind
++                lines.append(f"## {current.value} ({self.counts[current.name]})")
++                lines.append("")
++            entry = f"- `{issue.public_path}`"
++            if issue.details:
++                entry += f": {issue.details}"
++            lines.append(entry)
++        return "\n".join(lines)
++
++    def as_dict(self, **kwargs: Any) -> dict[str, Any]:
++        """Return this report's data as a dictionary.
++
++        Parameters:
++            **kwargs: Additional serialization options.
++
++        Returns:
++            A dictionary.
++        """
++        return {
++            "package": self.package,
++            "issues": [issue.as_dict(**kwargs) for issue in self.issues],
++            "counts": self.counts,
++            "canonical_paths": self.canonical_paths,
++        }
++
++
++def _module_is_private(module_path: str, package: str) -> bool:
++    parts = module_path.split(".")
++    if parts and parts[0] == package:
++        parts = parts[1:]
++    return any(part.startswith("_") for part in parts)
++
++
++def _public_members(obj: Module | Object) -> Iterator[tuple[str, Object | Alias]]:
++    for name, member in obj.members.items():
++        if member.is_public:
++            yield name, member
++
++
++def _walk_public(
++    obj: Object | Alias,
++    public_path: str,
++) -> Iterator[tuple[str, Object | Alias]]:
++    yield public_path, obj
++    if obj.is_alias:
++        return
++    if obj.is_module or obj.is_class:
++        for name, member in _public_members(obj):  # ty:ignore[invalid-argument-type]
++            yield from _walk_public(member, f"{public_path}.{name}")
++
++
++def audit_surface(package: Module) -> SurfaceReport:
++    """Audit the public API surface of a package.
++
++    The audit resolves re-export chains to their final targets and reports:
++    exported names defined in private modules, `__all__` entries that
++    resolve to nothing, public objects without a docstring, objects
++    reachable through several public paths, alias cycles, public
++    signatures referencing private objects, and public definitions
++    missing from their module's `__all__`. When an
++    object is reachable through several public paths, the canonical path
++    is the shortest one, with ties broken alphabetically.
++
++    Parameters:
++        package: The loaded package to audit.
++
++    Returns:
++        The audit report.
++    """
++    issues: list[SurfaceIssue] = []
++    reachable: dict[str, list[str]] = {}
++    signature_refs: list[tuple[str, Expr]] = []
++    private_origins: list[tuple[str, str]] = []
++
++    for public_path, obj in _walk_public(package, package.name):
++        if obj.is_alias:
++            try:
++                target = obj.final_target  # ty:ignore[unresolved-attribute]
++            except CyclicAliasError as error:
++                issues.append(
++                    SurfaceIssue(
++                        SurfaceIssueKind.CYCLIC_ALIAS,
++                        public_path,
++                        details=" -> ".join(error.chain),
++                    ),
++                )
++                continue
++            except AliasResolutionError:
++                issues.append(
++                    SurfaceIssue(
++                        SurfaceIssueKind.DANGLING_EXPORT,
++                        public_path,
++                        details=f"cannot resolve {obj.target_path}",  # ty:ignore[unresolved-attribute]
++                    ),
++                )
++                continue
++        else:
++            target = obj
++
++        reachable.setdefault(target.canonical_path, []).append(public_path)
++
++        target_module = target.module.path if not target.is_module else target.path
++        if _module_is_private(target_module, package.name) and not _module_is_private(
++            public_path,
++            package.name,
++        ):
++            private_origins.append((public_path, target.canonical_path))
++
++        for expr in _signature_expressions(target):
++            signature_refs.append((public_path, expr))
++
++        if not target.docstring and (target.is_class or target.is_function or target.is_module):
++            issues.append(
++                SurfaceIssue(
++                    SurfaceIssueKind.UNDOCUMENTED,
++                    public_path,
++                    details=target.canonical_path,
++                ),
++            )
++
++    for module_path, module in _iter_modules(package):
++        exports = module.exports
++        if exports is None:
++            continue
++        export_names = {str(export) for export in exports}
++        for name in export_names:
++            if name not in module.all_members:
++                issues.append(
++                    SurfaceIssue(
++                        SurfaceIssueKind.DANGLING_EXPORT,
++                        f"{module_path}.{name}",
++                        details=f"listed in {module_path}.__all__ but not found",
++                    ),
++                )
++        if _module_is_private(module_path, package.name):
++            continue
++        for name, member in module.members.items():
++            if name.startswith("_"):
++                continue
++            if member.is_alias:
++                if module is not member.parent:
++                    continue
++            elif member.is_module:
++                continue
++            if name not in export_names:
++                issues.append(
++                    SurfaceIssue(
++                        SurfaceIssueKind.INCONSISTENT_ALL,
++                        f"{module_path}.{name}",
++                        details=f"defined in {module_path} but missing from its __all__",
++                    ),
++                )
++
++    canonical_paths: dict[str, str] = {}
++    for canonical, paths in reachable.items():
++        chosen = min(paths, key=lambda path: (path.count("."), path))
++        canonical_paths[canonical] = chosen
++        if len(paths) > 1:
++            others = sorted(set(paths) - {chosen})
++            issues.append(
++                SurfaceIssue(
++                    SurfaceIssueKind.DUPLICATE_EXPOSURE,
++                    chosen,
++                    details="also reachable as " + ", ".join(others),
++                ),
++            )
++
++    for public_path, canonical in private_origins:
++        details = f"defined in {canonical}"
++        chosen = canonical_paths.get(canonical)
++        if chosen and chosen != public_path:
++            details += f", canonical public path is {chosen}"
++        issues.append(
++            SurfaceIssue(SurfaceIssueKind.PRIVATE_ORIGIN, public_path, details=details),
++        )
++
++    seen_leaks: set[tuple[str, str]] = set()
++    for public_path, expr in signature_refs:
++        for canonical in _private_references(expr, package.name):
++            if canonical in reachable or (public_path, canonical) in seen_leaks:
++                continue
++            seen_leaks.add((public_path, canonical))
++            issues.append(
++                SurfaceIssue(
++                    SurfaceIssueKind.PRIVATE_LEAK,
++                    public_path,
++                    details=f"references {canonical}",
++                ),
++            )
++
++    issues.sort(key=lambda issue: (issue.kind.name, issue.public_path))
++    return SurfaceReport(package.name, issues, canonical_paths)
++
++
++def _iter_modules(module: Module) -> Iterator[tuple[str, Module]]:
++    yield module.path, module
++    for member in module.members.values():
++        if member.is_alias:
++            continue
++        if member.is_module:
++            yield from _iter_modules(member)  # ty:ignore[invalid-argument-type]
++
++
++def _signature_expressions(obj: Object) -> Iterator[Expr]:
++    """Yield the annotation and base expressions of an object's public signature."""
++    if obj.is_function:
++        for parameter in obj.parameters:  # ty:ignore[unresolved-attribute]
++            if isinstance(parameter.annotation, Expr):
++                yield parameter.annotation
++        if isinstance(obj.returns, Expr):  # ty:ignore[unresolved-attribute]
++            yield obj.returns  # ty:ignore[unresolved-attribute]
++    elif obj.is_attribute:
++        if isinstance(obj.annotation, Expr):  # ty:ignore[unresolved-attribute]
++            yield obj.annotation  # ty:ignore[unresolved-attribute]
++    elif obj.is_class:
++        for base in obj.bases:  # ty:ignore[unresolved-attribute]
++            if isinstance(base, Expr):
++                yield base
++
++
++def _private_references(expr: Expr, package: str) -> Iterator[str]:
++    """Yield canonical paths of private-module objects referenced by an expression."""
++    nodes: list[str | Expr] = [expr] if isinstance(expr, ExprName) else list(expr.iterate(flat=True))
++    for node in nodes:
++        if not isinstance(node, ExprName):
++            continue
++        try:
++            canonical = node.canonical_path
++        except NameResolutionError:
++            continue
++        if not canonical.startswith(f"{package}."):
++            continue
++        module_path = canonical.rsplit(".", 1)[0]
++        if _module_is_private(module_path, package):
++            yield canonical

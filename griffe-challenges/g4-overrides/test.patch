@@ -1,0 +1,596 @@
+diff --git a/packages/griffelib/tests/test_substitution_check.py b/packages/griffelib/tests/test_substitution_check.py
+new file mode 100644
+index 0000000..ee6a018
+--- /dev/null
++++ b/packages/griffelib/tests/test_substitution_check.py
+@@ -0,0 +1,539 @@
++"""Tests for the override signature compatibility check."""
++
++from __future__ import annotations
++
++import json
++
++import pytest
++
++import griffe
++from griffe import temporary_visited_package
++
++
++def _issues(code: str) -> list:
++    with temporary_visited_package("ovrpkg", {"__init__.py": code}) as package:
++        return griffe.check_overrides(package)
++
++
++def _kinds(issues: list) -> set:
++    return {issue.kind for issue in issues}
++
++
++def test_compatible_override_produces_no_issues() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data, timeout=5): ...
++
++        class Child(Base):
++            def process(self, data, timeout=5): ...
++        """,
++    )
++    assert issues == []
++
++
++def test_no_inheritance_produces_no_issues() -> None:
++    issues = _issues(
++        """
++        class One:
++            def process(self, data): ...
++
++        class Two:
++            def process(self): ...
++        """,
++    )
++    assert issues == []
++
++
++def test_removed_parameter_is_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data, timeout=5): ...
++
++        class Child(Base):
++            def process(self, data): ...
++        """,
++    )
++    assert len(issues) == 1
++    issue = issues[0]
++    assert issue.kind is griffe.OverrideIssueKind.PARAMETER_REMOVED
++    assert issue.method_path == "ovrpkg.Child.process"
++    assert issue.base_path == "ovrpkg.Base.process"
++
++
++def test_removed_parameter_absorbed_by_kwargs_is_compatible() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data, timeout=5): ...
++
++        class Child(Base):
++            def process(self, data, **kwargs): ...
++        """,
++    )
++    assert issues == []
++
++
++def test_added_required_parameter_is_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data): ...
++
++        class Child(Base):
++            def process(self, data, mode): ...
++        """,
++    )
++    assert _kinds(issues) == {griffe.OverrideIssueKind.PARAMETER_ADDED_REQUIRED}
++
++
++def test_added_optional_parameter_is_compatible() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data): ...
++
++        class Child(Base):
++            def process(self, data, mode=None): ...
++        """,
++    )
++    assert issues == []
++
++
++def test_lost_default_value_is_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data, timeout=5): ...
++
++        class Child(Base):
++            def process(self, data, timeout): ...
++        """,
++    )
++    assert _kinds(issues) == {griffe.OverrideIssueKind.PARAMETER_NOW_REQUIRED}
++
++
++def test_keyword_becomes_positional_only_is_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data): ...
++
++        class Child(Base):
++            def process(self, data, /): ...
++        """,
++    )
++    assert _kinds(issues) == {griffe.OverrideIssueKind.PARAMETER_CHANGED_KIND}
++
++
++def test_positional_becomes_keyword_only_is_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data): ...
++
++        class Child(Base):
++            def process(self, *, data): ...
++        """,
++    )
++    assert _kinds(issues) == {griffe.OverrideIssueKind.PARAMETER_CHANGED_KIND}
++
++
++def test_reordered_positional_parameters_are_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, first, second): ...
++
++        class Child(Base):
++            def process(self, second, first): ...
++        """,
++    )
++    assert griffe.OverrideIssueKind.PARAMETER_MOVED in _kinds(issues)
++
++
++def test_removed_variadics_are_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, *args, **kwargs): ...
++
++        class Child(Base):
++            def process(self): ...
++        """,
++    )
++    kinds = [issue.kind for issue in issues]
++    assert kinds.count(griffe.OverrideIssueKind.VARIADIC_REMOVED) == 2
++
++
++def test_flavor_change_is_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            @staticmethod
++            def make(): ...
++
++        class Child(Base):
++            def make(self): ...
++        """,
++    )
++    assert _kinds(issues) == {griffe.OverrideIssueKind.FLAVOR_CHANGED}
++
++
++def test_classmethod_first_parameter_is_ignored() -> None:
++    issues = _issues(
++        """
++        class Base:
++            @classmethod
++            def make(cls, value): ...
++
++        class Child(Base):
++            @classmethod
++            def make(cls, value): ...
++        """,
++    )
++    assert issues == []
++
++
++def test_nearest_ancestor_definition_wins() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data): ...
++
++        class Middle(Base):
++            def process(self, data, extra=1): ...
++
++        class Child(Middle):
++            def process(self, data): ...
++        """,
++    )
++    assert len(issues) == 1
++    assert issues[0].base_path == "ovrpkg.Middle.process"
++
++
++def test_grandparent_override_is_checked_when_parent_does_not_define() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data): ...
++
++        class Middle(Base):
++            pass
++
++        class Child(Middle):
++            def process(self): ...
++        """,
++    )
++    assert len(issues) == 1
++    assert issues[0].base_path == "ovrpkg.Base.process"
++
++
++def test_nested_and_submodule_classes_are_checked() -> None:
++    with temporary_visited_package(
++        "ovrpkg",
++        {
++            "__init__.py": "",
++            "inner.py": """
++class Base:
++    def run(self, x): ...
++
++class Outer:
++    class Child(Base):
++        def run(self): ...
++""",
++        },
++    ) as package:
++        issues = griffe.check_overrides(package)
++    assert len(issues) == 1
++    assert issues[0].method_path == "ovrpkg.inner.Outer.Child.run"
++
++
++def test_private_name_mangled_methods_are_ignored() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def __helper(self, x): ...
++
++        class Child(Base):
++            def __helper(self): ...
++        """,
++    )
++    assert issues == []
++
++
++def test_method_overridden_by_attribute_is_kind_change() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def value(self): ...
++
++        class Child(Base):
++            value = 3
++        """,
++    )
++    assert _kinds(issues) == {griffe.OverrideIssueKind.KIND_CHANGED}
++    issue = issues[0]
++    assert issue.method_path == "ovrpkg.Child.value"
++    assert issue.base_path == "ovrpkg.Base.value"
++
++
++def test_attribute_overridden_by_method_is_kind_change() -> None:
++    issues = _issues(
++        """
++        class Base:
++            option = 1
++
++        class Child(Base):
++            def option(self): ...
++        """,
++    )
++    assert _kinds(issues) == {griffe.OverrideIssueKind.KIND_CHANGED}
++
++
++def test_property_overriding_method_is_kind_change() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def size(self): ...
++
++        class Child(Base):
++            @property
++            def size(self): ...
++        """,
++    )
++    assert _kinds(issues) == {griffe.OverrideIssueKind.KIND_CHANGED}
++
++
++def test_attribute_overriding_attribute_is_not_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            option = 1
++
++        class Child(Base):
++            option = 2
++        """,
++    )
++    assert issues == []
++
++
++def test_incompatible_diamond_bases_are_reported() -> None:
++    issues = _issues(
++        """
++        class Left:
++            def act(self, a, b): ...
++
++        class Right:
++            def act(self, a, b, c): ...
++
++        class Both(Left, Right): ...
++        """,
++    )
++    conflicts = [i for i in issues if i.kind is griffe.OverrideIssueKind.BASE_CONFLICT]
++    assert len(conflicts) == 1
++    assert conflicts[0].method_path == "ovrpkg.Both.act"
++
++
++def test_third_incompatible_base_is_also_reported() -> None:
++    issues = _issues(
++        """
++        class First:
++            def act(self, a): ...
++
++        class Second:
++            def act(self, a): ...
++
++        class Third:
++            def act(self, a, b): ...
++
++        class All(First, Second, Third): ...
++        """,
++    )
++    conflicts = [i for i in issues if i.kind is griffe.OverrideIssueKind.BASE_CONFLICT]
++    assert len(conflicts) == 1
++    assert conflicts[0].base_path == "ovrpkg.Third.act"
++
++
++def test_compatible_diamond_bases_are_not_reported() -> None:
++    issues = _issues(
++        """
++        class Left:
++            def act(self, a, b=1): ...
++
++        class Right:
++            def act(self, a, b=1): ...
++
++        class Both(Left, Right): ...
++        """,
++    )
++    assert issues == []
++
++
++def test_overridden_diamond_method_is_not_a_conflict() -> None:
++    issues = _issues(
++        """
++        class Left:
++            def act(self, a): ...
++
++        class Right:
++            def act(self, a, b): ...
++
++        class Both(Left, Right):
++            def act(self, a, b=None): ...
++        """,
++    )
++    assert not [i for i in issues if i.kind is griffe.OverrideIssueKind.BASE_CONFLICT]
++
++
++def test_dunder_and_flavored_diamond_methods_are_not_conflicts() -> None:
++    issues = _issues(
++        """
++        class Left:
++            def __init__(self, a): ...
++            @staticmethod
++            def make(a): ...
++
++        class Right:
++            def __init__(self, a, b): ...
++            @staticmethod
++            def make(a, b): ...
++
++        class Both(Left, Right): ...
++        """,
++    )
++    assert not [i for i in issues if i.kind is griffe.OverrideIssueKind.BASE_CONFLICT]
++
++
++def test_unresolvable_bases_are_skipped() -> None:
++    issues = _issues(
++        """
++        from missing_module import MysteryBase
++
++        class Child(MysteryBase):
++            def process(self, data): ...
++        """,
++    )
++    assert issues == []
++
++
++def test_issues_are_sorted_deterministically() -> None:
++    code = """
++    class Base:
++        def zeta(self, a, b=1): ...
++        def alpha(self, a, b=1): ...
++
++    class Child(Base):
++        def zeta(self, a): ...
++        def alpha(self, a): ...
++    """
++    first = _issues(code)
++    second = _issues(code)
++    assert [(issue.kind, issue.method_path) for issue in first] == [
++        (issue.kind, issue.method_path) for issue in second
++    ]
++    paths = [issue.method_path for issue in first]
++    assert paths == sorted(paths)
++
++
++def test_issue_as_dict_is_json_serializable() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data, timeout=5): ...
++
++        class Child(Base):
++            def process(self, data): ...
++        """,
++    )
++    payload = json.dumps([issue.as_dict() for issue in issues])
++    decoded = json.loads(payload)
++    assert decoded[0]["method_path"] == "ovrpkg.Child.process"
++    assert decoded[0]["base_path"] == "ovrpkg.Base.process"
++
++
++def test_issue_str_mentions_both_paths() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data, timeout=5): ...
++
++        class Child(Base):
++            def process(self, data): ...
++        """,
++    )
++    text = str(issues[0])
++    assert "ovrpkg.Child.process" in text
++    assert "ovrpkg.Base.process" in text
++
++
++def _run_overrides(tmp_path, code: str, *args: str) -> tuple[int, str, str]:
++    import io
++    from contextlib import redirect_stderr, redirect_stdout
++    from textwrap import dedent
++
++    from griffecli import main
++
++    package = tmp_path / "ovrclipkg"
++    package.mkdir(exist_ok=True)
++    (package / "__init__.py").write_text(dedent(code), encoding="utf8")
++    out, err = io.StringIO(), io.StringIO()
++    with redirect_stdout(out), redirect_stderr(err):
++        exit_code = main(["overrides", "ovrclipkg", "-s", str(tmp_path), *args])
++    return exit_code, out.getvalue(), err.getvalue()
++
++
++INCOMPATIBLE = """
++class Base:
++    def process(self, data, timeout=5): ...
++
++class Child(Base):
++    def process(self, data): ...
++"""
++
++
++def test_cli_overrides_reports_and_exits_nonzero(tmp_path) -> None:
++    exit_code, _, err = _run_overrides(tmp_path, INCOMPATIBLE)
++    assert exit_code == 1
++    assert "ovrclipkg.Child.process" in err
++    assert "ovrclipkg.Base.process" in err
++
++
++def test_cli_overrides_clean_package_exits_zero(tmp_path) -> None:
++    code = """
++    class Base:
++        def process(self, data): ...
++
++    class Child(Base):
++        def process(self, data): ...
++    """
++    exit_code, _, err = _run_overrides(tmp_path, code)
++    assert exit_code == 0
++    assert err == ""
++
++
++def test_cli_overrides_kind_filter(tmp_path) -> None:
++    code = """
++    class Base:
++        def process(self, data, timeout=5): ...
++        def value(self): ...
++
++    class Child(Base):
++        def process(self, data): ...
++        value = 3
++    """
++    exit_code, out, _ = _run_overrides(
++        tmp_path, code, "--json", "--kind", "kind-changed"
++    )
++    assert exit_code == 1
++    payload = json.loads(out)
++    kinds = {item["kind"] for item in payload}
++    assert kinds == {griffe.OverrideIssueKind.KIND_CHANGED.value}
++
++
++def test_cli_overrides_json_output(tmp_path) -> None:
++    exit_code, out, _ = _run_overrides(tmp_path, INCOMPATIBLE, "--json")
++    assert exit_code == 1
++    payload = json.loads(out)
++    assert payload[0]["method_path"] == "ovrclipkg.Child.process"
+diff --git a/test.sh b/test.sh
+new file mode 100755
+index 0000000..1ace93d
+--- /dev/null
++++ b/test.sh
+@@ -0,0 +1,45 @@
++#!/usr/bin/env bash
++set -uo pipefail
++
++OUTPUT_PATH=""
++MODE=""
++
++while [[ $# -gt 0 ]]; do
++    case "$1" in
++        --output_path)
++            OUTPUT_PATH="$2"
++            shift 2
++            ;;
++        base|new)
++            MODE="$1"
++            shift
++            ;;
++        *)
++            echo "unknown argument: $1" >&2
++            exit 2
++            ;;
++    esac
++done
++
++if [[ -z "$OUTPUT_PATH" || -z "$MODE" ]]; then
++    echo "usage: test.sh --output_path <path> {base|new}" >&2
++    exit 2
++fi
++
++cd "$(dirname "$0")/packages/griffelib"
++
++NEW_TESTS="tests/test_substitution_check.py"
++
++case "$MODE" in
++    base)
++        python3 -m pytest tests/ -o addopts= -v \
++            --ignore=tests/test_stdlib.py \
++            --ignore=tests/test_api.py \
++            --ignore="$NEW_TESTS" \
++            --junitxml="$OUTPUT_PATH"
++        ;;
++    new)
++        python3 -m pytest "$NEW_TESTS" -o addopts= -v \
++            --junitxml="$OUTPUT_PATH"
++        ;;
++esac

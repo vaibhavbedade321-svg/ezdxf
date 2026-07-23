@@ -1,0 +1,544 @@
+diff --git a/packages/griffecli/src/griffecli/_internal/cli.py b/packages/griffecli/src/griffecli/_internal/cli.py
+index 232c1e7..77e1be9 100644
+--- a/packages/griffecli/src/griffecli/_internal/cli.py
++++ b/packages/griffecli/src/griffecli/_internal/cli.py
+@@ -132,7 +132,7 @@ def get_parser() -> argparse.ArgumentParser:
+         An argparse parser.
+     """
+     from griffe._internal import debug  # noqa: PLC0415
+-    from griffe._internal.enumerations import ExplanationStyle, Parser  # noqa: PLC0415
++    from griffe._internal.enumerations import ExplanationStyle, OverrideIssueKind, Parser  # noqa: PLC0415
+ 
+     usage = "%(prog)s [GLOBAL_OPTS...] COMMAND [COMMAND_OPTS...]"
+     description = "Signatures for entire Python programs. "
+@@ -326,6 +326,27 @@ def get_parser() -> argparse.ArgumentParser:
+     check_options.add_argument("-f", "--format", dest="style", choices=formats, default=None, help="Output format.")
+     add_common_options(check_parser)
+ 
++    # ========= OVERRIDES PARSER ========= #
++    overrides_parser = add_subparser("overrides", "Check method overrides for signature compatibility.")
++    overrides_options = overrides_parser.add_argument_group(title="Overrides options")
++    overrides_options.add_argument("package", metavar="PACKAGE", help="Package to find, load and check.")
++    overrides_options.add_argument(
++        "--kind",
++        dest="kinds",
++        action="append",
++        choices=[kind.name.lower().replace("_", "-") for kind in OverrideIssueKind],
++        help="Only report incompatibilities of this kind. May be repeated. "
++        "All kinds are reported by default.",
++    )
++    overrides_options.add_argument(
++        "--json",
++        dest="as_json",
++        action="store_true",
++        default=False,
++        help="Output the override incompatibilities as JSON.",
++    )
++    add_common_options(overrides_parser)
++
+     return parser
+ 
+ 
+@@ -587,6 +608,76 @@ def check(
+     return 0
+ 
+ 
++def overrides(
++    package: str | Path,
++    *,
++    as_json: bool = False,
++    kinds: Sequence[str] | None = None,
++    search_paths: Sequence[str | Path] | None = None,
++    append_sys_path: bool = False,
++    extensions: Sequence[str | dict[str, Any] | Extension | type[Extension]] | None = None,
++    find_stubs_package: bool = False,
++    allow_inspection: bool = True,
++    force_inspection: bool = False,
++) -> int:
++    """Check the method overrides of a package for signature compatibility.
++
++    Parameters:
++        package: The package to load and check.
++        as_json: Whether to output the incompatibilities as JSON.
++        kinds: Incompatibility kinds to report. All kinds by default.
++        search_paths: The paths to search into.
++        append_sys_path: Whether to append the contents of `sys.path` to the search paths.
++        extensions: The extensions to use.
++        find_stubs_package: Whether to search for stubs-only package.
++        allow_inspection: Whether to allow inspecting modules when visiting them is not possible.
++        force_inspection: Whether to force using dynamic analysis when loading data.
++
++    Returns:
++        `0` when all overrides are compatible, `1` otherwise.
++    """
++    from griffe._internal.encoders import JSONEncoder  # noqa: PLC0415
++    from griffe._internal.exceptions import ExtensionError  # noqa: PLC0415
++    from griffe._internal.extensions.base import load_extensions  # noqa: PLC0415
++    from griffe._internal.loader import load  # noqa: PLC0415
++    from griffe._internal.logger import logger  # noqa: PLC0415
++    from griffe._internal.overrides import check_overrides  # noqa: PLC0415
++
++    search_paths = list(search_paths) if search_paths else []
++    if append_sys_path:
++        search_paths.extend(sys.path)
++
++    try:
++        loaded_extensions = load_extensions(*(extensions or ()))
++    except ExtensionError:
++        logger.exception("Could not load extensions")
++        return 1
++
++    module = load(
++        package,
++        extensions=loaded_extensions,
++        search_paths=search_paths,
++        allow_inspection=allow_inspection,
++        force_inspection=force_inspection,
++        find_stubs_package=find_stubs_package,
++        resolve_aliases=True,
++    )
++    issues = check_overrides(module)
++    if kinds:
++        wanted = {name.replace("-", "_").upper() for name in kinds}
++        issues = [issue for issue in issues if issue.kind.name in wanted]
++
++    if as_json:
++        print(json.dumps([issue.as_dict() for issue in issues], cls=JSONEncoder))
++    else:
++        for issue in issues:
++            print(str(issue), file=sys.stderr)
++
++    if issues:
++        return 1
++    return 0
++
++
+ def main(args: list[str] | None = None) -> int:
+     """Run the main program.
+ 
+@@ -623,5 +714,5 @@ def main(args: list[str] | None = None) -> int:
+     sys.setrecursionlimit(max(2000, sys.getrecursionlimit()))
+ 
+     # Run subcommand.
+-    commands: dict[str, Callable[..., int]] = {"check": check, "dump": dump}
++    commands: dict[str, Callable[..., int]] = {"check": check, "dump": dump, "overrides": overrides}
+     return commands[subcommand](**opts_dict)
+diff --git a/packages/griffelib/src/griffe/__init__.py b/packages/griffelib/src/griffe/__init__.py
+index a559e0f..c42475e 100644
+--- a/packages/griffelib/src/griffe/__init__.py
++++ b/packages/griffelib/src/griffe/__init__.py
+@@ -178,6 +178,7 @@ from griffe._internal.agents.nodes.values import get_value, safe_get_value
+ from griffe._internal.agents.visitor import Visitor, builtin_decorators, stdlib_decorators, typing_overload, visit
+ from griffe._internal.c3linear import c3linear_merge
+ from griffe._internal.collections import LinesCollection, ModulesCollection
++from griffe._internal.overrides import OverrideIssue, check_overrides
+ from griffe._internal.diff import (
+     AttributeChangedTypeBreakage,
+     AttributeChangedValueBreakage,
+@@ -256,6 +257,7 @@ from griffe._internal.enumerations import (
+     LogLevel,
+     ObjectKind,
+     ParameterKind,
++    OverrideIssueKind,
+     Parser,
+     TypeParameterKind,
+ )
+@@ -384,6 +386,9 @@ __all__ = [
+     "AttributeChangedValueBreakage",
+     "AutoOptions",
+     "Breakage",
++    "OverrideIssue",
++    "OverrideIssueKind",
++    "check_overrides",
+     "BreakageKind",
+     "BuiltinModuleError",
+     "Class",
+diff --git a/packages/griffelib/src/griffe/_internal/enumerations.py b/packages/griffelib/src/griffe/_internal/enumerations.py
+index 17e346a..a1b66c3 100644
+--- a/packages/griffelib/src/griffe/_internal/enumerations.py
++++ b/packages/griffelib/src/griffe/_internal/enumerations.py
+@@ -150,6 +150,29 @@ class BreakageKind(str, Enum):
+     """Base class was removed"""
+ 
+ 
++class OverrideIssueKind(str, Enum):
++    """Enumeration of the possible override incompatibilities."""
++
++    PARAMETER_REMOVED = "Overriding method removed a parameter"
++    """Overriding method removed a parameter"""
++    PARAMETER_ADDED_REQUIRED = "Overriding method added a required parameter"
++    """Overriding method added a required parameter"""
++    PARAMETER_CHANGED_KIND = "Overriding method changed how a parameter is passed"
++    """Overriding method changed how a parameter is passed"""
++    PARAMETER_NOW_REQUIRED = "Overriding method removed a default value"
++    """Overriding method removed a default value"""
++    PARAMETER_MOVED = "Overriding method reordered positional parameters"
++    """Overriding method reordered positional parameters"""
++    VARIADIC_REMOVED = "Overriding method removed a variadic parameter"
++    """Overriding method removed a variadic parameter"""
++    FLAVOR_CHANGED = "Overriding method changed the method flavor"
++    """Overriding method changed the method flavor"""
++    KIND_CHANGED = "Method and overriding member have different kinds"
++    """Method and overriding member have different kinds"""
++    BASE_CONFLICT = "Inherited definitions from several bases are incompatible"
++    """Inherited definitions from several bases are incompatible"""
++
++
+ class Parser(str, Enum):
+     """Enumeration of the different docstring parsers."""
+ 
+diff --git a/packages/griffelib/src/griffe/_internal/overrides.py b/packages/griffelib/src/griffe/_internal/overrides.py
+new file mode 100644
+index 0000000..939bc86
+--- /dev/null
++++ b/packages/griffelib/src/griffe/_internal/overrides.py
+@@ -0,0 +1,349 @@
++# This module checks method overrides for signature compatibility.
++# A subclass method that cannot be substituted for the method it overrides
++# breaks callers that hold the parent type.
++
++from __future__ import annotations
++
++from typing import TYPE_CHECKING, Any
++
++from griffe._internal.enumerations import Kind, OverrideIssueKind, ParameterKind
++from griffe._internal.exceptions import AliasResolutionError, CyclicAliasError
++
++if TYPE_CHECKING:
++    from collections.abc import Iterator
++
++    from griffe._internal.models import Class, Function, Module, Object
++
++
++_KEYWORD_KINDS = frozenset(
++    {
++        ParameterKind.positional_or_keyword,
++        ParameterKind.keyword_only,
++    },
++)
++_POSITIONAL_KINDS = frozenset(
++    {
++        ParameterKind.positional_only,
++        ParameterKind.positional_or_keyword,
++    },
++)
++
++
++class OverrideIssue:
++    """An incompatibility between a method and the method it overrides."""
++
++    def __init__(
++        self,
++        kind: OverrideIssueKind,
++        method_path: str,
++        base_path: str,
++        details: str = "",
++    ) -> None:
++        """Initialize the issue.
++
++        Parameters:
++            kind: The kind of incompatibility.
++            method_path: The path of the overriding method.
++            base_path: The path of the overridden method.
++            details: Additional details about the incompatibility.
++        """
++        self.kind = kind
++        """The kind of incompatibility."""
++        self.method_path = method_path
++        """The path of the overriding method."""
++        self.base_path = base_path
++        """The path of the overridden method."""
++        self.details = details
++        """Additional details about the incompatibility."""
++
++    def __str__(self) -> str:
++        return self.explain()
++
++    def explain(self) -> str:
++        """Explain the incompatibility with a one-line human-readable message.
++
++        Returns:
++            A message naming both paths and the incompatibility.
++        """
++        text = f"{self.method_path}: {self.kind.value} (overrides {self.base_path})"
++        if self.details:
++            text += f": {self.details}"
++        return text
++
++    def __repr__(self) -> str:
++        return f"OverrideIssue(kind={self.kind.name}, method_path={self.method_path!r})"
++
++    def as_dict(self, **kwargs: Any) -> dict[str, Any]:  # noqa: ARG002
++        """Return this issue's data as a dictionary.
++
++        Parameters:
++            **kwargs: Additional serialization options.
++
++        Returns:
++            A dictionary.
++        """
++        data: dict[str, Any] = {
++            "kind": self.kind,
++            "method_path": self.method_path,
++            "base_path": self.base_path,
++        }
++        if self.details:
++            data["details"] = self.details
++        return data
++
++
++def _has_var_positional(func: Function) -> bool:
++    return any(parameter.kind is ParameterKind.var_positional for parameter in func.parameters)
++
++
++def _has_var_keyword(func: Function) -> bool:
++    return any(parameter.kind is ParameterKind.var_keyword for parameter in func.parameters)
++
++
++def _positional_names(func: Function) -> list[str]:
++    return [
++        parameter.name
++        for parameter in func.parameters
++        if parameter.kind in _POSITIONAL_KINDS
++    ]
++
++
++def _compare_signatures(
++    child: Function,
++    parent: Function,
++) -> Iterator[tuple[OverrideIssueKind, str]]:
++    child_names = {parameter.name for parameter in child.parameters}
++    child_var_positional = _has_var_positional(child)
++    child_var_keyword = _has_var_keyword(child)
++
++    for parameter in parent.parameters:
++        if parameter.kind is ParameterKind.var_positional:
++            if not child_var_positional:
++                yield (
++                    OverrideIssueKind.VARIADIC_REMOVED,
++                    f"*{parameter.name} is not accepted anymore",
++                )
++            continue
++        if parameter.kind is ParameterKind.var_keyword:
++            if not child_var_keyword:
++                yield (
++                    OverrideIssueKind.VARIADIC_REMOVED,
++                    f"**{parameter.name} is not accepted anymore",
++                )
++            continue
++
++        if parameter.name not in child_names:
++            absorbed_positionally = parameter.kind is ParameterKind.positional_only and child_var_positional
++            absorbed_by_keyword = parameter.kind in _KEYWORD_KINDS and child_var_keyword
++            if not absorbed_positionally and not absorbed_by_keyword:
++                yield (
++                    OverrideIssueKind.PARAMETER_REMOVED,
++                    f"parameter {parameter.name} is not accepted anymore",
++                )
++            continue
++
++        child_parameter = child.parameters[parameter.name]
++        if parameter.kind in _KEYWORD_KINDS and child_parameter.kind is ParameterKind.positional_only:
++            yield (
++                OverrideIssueKind.PARAMETER_CHANGED_KIND,
++                f"parameter {parameter.name} cannot be passed by keyword anymore",
++            )
++        elif parameter.kind in _POSITIONAL_KINDS and child_parameter.kind is ParameterKind.keyword_only:
++            yield (
++                OverrideIssueKind.PARAMETER_CHANGED_KIND,
++                f"parameter {parameter.name} cannot be passed positionally anymore",
++            )
++
++        if parameter.default is not None and child_parameter.default is None:
++            yield (
++                OverrideIssueKind.PARAMETER_NOW_REQUIRED,
++                f"parameter {parameter.name} lost its default value",
++            )
++
++    parent_names = {parameter.name for parameter in parent.parameters}
++    for parameter in child.parameters:
++        if parameter.kind in (ParameterKind.var_positional, ParameterKind.var_keyword):
++            continue
++        if parameter.name in parent_names:
++            continue
++        if parameter.default is None:
++            yield (
++                OverrideIssueKind.PARAMETER_ADDED_REQUIRED,
++                f"new parameter {parameter.name} has no default value",
++            )
++
++    parent_positional = _positional_names(parent)
++    child_positional = _positional_names(child)
++    common = [name for name in parent_positional if name in child_positional]
++    reordered = [name for name in child_positional if name in common]
++    if common != reordered:
++        yield (
++            OverrideIssueKind.PARAMETER_MOVED,
++            "positional parameters were reordered: "
++            + ", ".join(common)
++            + " became "
++            + ", ".join(reordered),
++        )
++
++
++def _iter_override_pairs(cls: Class) -> Iterator[tuple[Object, Object, Class]]:
++    try:
++        ancestors = cls.mro()
++    except (AliasResolutionError, CyclicAliasError):
++        return
++    for name, member in cls.members.items():
++        if member.is_alias or not (member.is_function or member.is_attribute):
++            continue
++        for ancestor in ancestors:
++            base_member = ancestor.members.get(name)
++            if base_member is None or base_member.is_alias:
++                continue
++            if base_member.is_function or base_member.is_attribute:
++                yield member, base_member, ancestor  # ty:ignore[invalid-yield]
++            break
++
++
++def _iter_classes(obj: Module | Object) -> Iterator[Class]:
++    for member in obj.members.values():
++        if member.is_alias:
++            continue
++        if member.is_class:
++            yield member  # ty:ignore[invalid-yield]
++            yield from _iter_classes(member)
++        elif member.is_module:
++            yield from _iter_classes(member)
++
++
++def check_overrides(package: Module) -> list[OverrideIssue]:
++    """Check every method override of a package for signature compatibility.
++
++    For each class, every method that overrides a method of an ancestor
++    (following the method resolution order) is compared against the nearest
++    overridden definition. An override is incompatible when it cannot be
++    called with the arguments its ancestor accepts: a parameter disappeared
++    without being absorbed by a variadic, a parameter can no longer be
++    passed by keyword or positionally, a parameter lost its default value, a
++    new parameter without default was added, positional parameters were
++    reordered, or a variadic disappeared. Methods whose names start with a
++    double underscore, except dunders, are excluded, as are staticmethods
++    and classmethods compared against a different flavor.
++
++    Parameters:
++        package: The loaded package to check.
++
++    Returns:
++        The incompatibilities found, sorted by method path then kind.
++    """
++    issues: list[OverrideIssue] = []
++    for cls in _iter_classes(package):
++        for child, parent, ancestor in _iter_override_pairs(cls):
++            if child.name.startswith("__") and not child.name.endswith("__"):
++                continue
++            if child.is_function is not parent.is_function:
++                issues.append(
++                    OverrideIssue(
++                        OverrideIssueKind.KIND_CHANGED,
++                        child.path,
++                        parent.path,
++                        details=f"{_member_kind(parent)} became {_member_kind(child)}",
++                    ),
++                )
++                continue
++            if not child.is_function:
++                continue
++            child_flavors = {"staticmethod", "classmethod"} & child.labels
++            parent_flavors = {"staticmethod", "classmethod"} & parent.labels
++            if child_flavors != parent_flavors:
++                issues.append(
++                    OverrideIssue(
++                        OverrideIssueKind.FLAVOR_CHANGED,
++                        child.path,
++                        parent.path,
++                        details=(
++                            f"{', '.join(sorted(parent_flavors)) or 'regular method'}"
++                            f" became {', '.join(sorted(child_flavors)) or 'regular method'}"
++                        ),
++                    ),
++                )
++                continue
++            skip_first = not child_flavors or "classmethod" in child_flavors
++            child_view = _without_first_parameter(child) if skip_first else child
++            parent_view = _without_first_parameter(parent) if skip_first else parent
++            for kind, details in _compare_signatures(child_view, parent_view):
++                issues.append(OverrideIssue(kind, child.path, parent.path, details=details))
++        issues.extend(_base_conflicts(cls))
++    issues.sort(key=lambda issue: (issue.method_path, issue.kind.name))
++    return issues
++
++
++def _member_kind(obj: Object) -> str:
++    if obj.is_function:
++        return "a method"
++    if "property" in obj.labels:
++        return "a property"
++    return "an attribute"
++
++
++def _base_conflicts(cls: Class) -> Iterator[OverrideIssue]:
++    """Yield conflicts between incompatible inherited definitions.
++
++    When a class inherits the same method name from several bases without
++    overriding it, the definition first in the method resolution order is
++    the one instances use; it must be able to substitute for the later
++    ones.
++    """
++    try:
++        ancestors = cls.mro()
++    except (AliasResolutionError, CyclicAliasError):
++        return
++    inherited: dict[str, list[Function]] = {}
++    for ancestor in ancestors:
++        for name, member in ancestor.members.items():
++            if member.is_alias or not member.is_function:
++                continue
++            if name.startswith("__") or name in cls.members:
++                continue
++            if {"staticmethod", "classmethod"} & member.labels:
++                continue
++            inherited.setdefault(name, []).append(member)  # ty:ignore[invalid-argument-type]
++    for name, definitions in inherited.items():
++        if len(definitions) < 2:
++            continue
++        winner = definitions[0]
++        winner_view = _without_first_parameter(winner)
++        for challenged in definitions[1:]:
++            challenged_view = _without_first_parameter(challenged)
++            if list(_compare_signatures(winner_view, challenged_view)):
++                yield OverrideIssue(
++                    OverrideIssueKind.BASE_CONFLICT,
++                    f"{cls.path}.{name}",
++                    challenged.path,
++                    details=f"resolved to {winner.path}, incompatible with {challenged.path}",
++                )
++
++
++class _FunctionView:
++    """A lightweight view of a function with its first parameter removed."""
++
++    def __init__(self, func: Function) -> None:
++        self.name = func.name
++        self.path = func.path
++        self.parameters = _ParametersView(list(func.parameters)[1:])
++
++
++class _ParametersView:
++    def __init__(self, parameters: list) -> None:
++        self._parameters = parameters
++        self._by_name = {parameter.name: parameter for parameter in parameters}
++
++    def __iter__(self):  # noqa: ANN204
++        return iter(self._parameters)
++
++    def __getitem__(self, name: str):  # noqa: ANN204
++        return self._by_name[name]
++
++
++def _without_first_parameter(func: Function) -> Function:
++    if not list(func.parameters):
++        return func
++    return _FunctionView(func)  # ty:ignore[invalid-return-type]

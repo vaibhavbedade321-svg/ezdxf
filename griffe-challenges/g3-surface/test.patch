@@ -1,0 +1,526 @@
+diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
+new file mode 100644
+index 0000000..467384b
+--- /dev/null
++++ b/packages/griffelib/tests/test_exposure_audit.py
+@@ -0,0 +1,469 @@
++"""Tests for the public API surface audit."""
++
++from __future__ import annotations
++
++import json
++import re
++
++import pytest
++
++import griffe
++from griffe import temporary_visited_package
++
++
++def _audit(modules: dict[str, str]):
++    with temporary_visited_package("audpkg", modules, resolve_aliases=True) as package:
++        return griffe.audit_surface(package)
++
++
++def _kinds(report) -> set:
++    return {issue.kind for issue in report.issues}
++
++
++def _paths(report, kind) -> set[str]:
++    return {issue.public_path for issue in report.issues_of_kind(kind)}
++
++
++def test_clean_package_has_no_issues() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Package doc."""\n\ndef tool():\n    """Tool doc."""\n',
++        },
++    )
++    assert report.issues == []
++
++
++def test_private_origin_export_is_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\nfrom audpkg._core import tool\n\n__all__ = ["tool"]\n',
++            "_core.py": 'def tool():\n    """Doc."""\n',
++        },
++    )
++    assert _paths(report, griffe.SurfaceIssueKind.PRIVATE_ORIGIN) == {"audpkg.tool"}
++
++
++def test_public_origin_export_is_not_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\nfrom audpkg.core import tool\n\n__all__ = ["tool"]\n',
++            "core.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        },
++    )
++    assert not _paths(report, griffe.SurfaceIssueKind.PRIVATE_ORIGIN)
++
++
++def test_dangling_all_entry_is_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\n__all__ = ["missing"]\n',
++        },
++    )
++    assert _paths(report, griffe.SurfaceIssueKind.DANGLING_EXPORT) == {"audpkg.missing"}
++
++
++def test_valid_all_entries_are_not_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        },
++    )
++    assert not _paths(report, griffe.SurfaceIssueKind.DANGLING_EXPORT)
++
++
++def test_undocumented_public_objects_are_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n\nclass NoDoc: ...\n',
++        },
++    )
++    paths = _paths(report, griffe.SurfaceIssueKind.UNDOCUMENTED)
++    assert "audpkg.nodoc" in paths
++    assert "audpkg.NoDoc" in paths
++
++
++def test_documented_and_private_objects_are_not_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef _hidden(): ...\n\ndef tool():\n    """Doc."""\n',
++        },
++    )
++    assert not _paths(report, griffe.SurfaceIssueKind.UNDOCUMENTED)
++
++
++def test_duplicate_exposure_is_reported_with_canonical_path() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\nfrom audpkg.core import tool\n\n__all__ = ["tool"]\n',
++            "core.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        },
++    )
++    duplicates = report.issues_of_kind(griffe.SurfaceIssueKind.DUPLICATE_EXPOSURE)
++    assert len(duplicates) == 1
++    issue = duplicates[0]
++    assert issue.public_path == "audpkg.tool"
++    assert "audpkg.core.tool" in issue.details
++
++
++def test_canonical_path_prefers_shortest_then_alphabetical() -> None:
++    report = _audit(
++        {
++            "__init__.py": (
++                '"""Doc."""\n'
++                "from audpkg.beta import tool\n"
++                "from audpkg.alpha import tool as tool2\n\n"
++                '__all__ = ["tool"]\n'
++            ),
++            "alpha.py": '"""Doc."""\nfrom audpkg.beta import tool\n\n__all__ = ["tool"]\n',
++            "beta.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        },
++    )
++    canonical = report.canonical_paths["audpkg.beta.tool"]
++    assert canonical == "audpkg.tool"
++
++
++def test_single_exposure_has_no_duplicate_issue() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n',
++        },
++    )
++    assert not report.issues_of_kind(griffe.SurfaceIssueKind.DUPLICATE_EXPOSURE)
++
++
++def test_issues_are_sorted_deterministically() -> None:
++    modules = {
++        "__init__.py": '"""Doc."""\n\ndef zeta(): ...\n\ndef alpha(): ...\n',
++    }
++    first = _audit(modules)
++    second = _audit(modules)
++    assert [(issue.kind, issue.public_path) for issue in first.issues] == [
++        (issue.kind, issue.public_path) for issue in second.issues
++    ]
++    undocumented = [issue.public_path for issue in first.issues_of_kind(griffe.SurfaceIssueKind.UNDOCUMENTED)]
++    assert undocumented == sorted(undocumented)
++
++
++def test_report_as_dict_is_json_serializable() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n',
++        },
++    )
++    payload = json.dumps(report.as_dict())
++    decoded = json.loads(payload)
++    assert decoded["package"] == "audpkg"
++    assert decoded["issues"]
++    assert "canonical_paths" in decoded
++    assert "counts" in decoded
++
++
++def test_issues_of_kind_filters() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n\n__all__ = ["nodoc", "ghost"]\n',
++        },
++    )
++    dangling = report.issues_of_kind(griffe.SurfaceIssueKind.DANGLING_EXPORT)
++    undocumented = report.issues_of_kind(griffe.SurfaceIssueKind.UNDOCUMENTED)
++    assert {issue.public_path for issue in dangling} == {"audpkg.ghost"}
++    assert {issue.public_path for issue in undocumented} == {"audpkg.nodoc"}
++    all_keys = sorted((issue.kind, issue.public_path) for issue in report.issues)
++    sub_keys = sorted((issue.kind, issue.public_path) for issue in [*dangling, *undocumented])
++    assert all_keys == sub_keys
++
++
++def test_cyclic_alias_is_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n',
++            "left.py": '"""Doc."""\nfrom audpkg.right import thing\n\n__all__ = ["thing"]\n',
++            "right.py": '"""Doc."""\nfrom audpkg.left import thing\n\n__all__ = ["thing"]\n',
++        },
++    )
++    cyclic = report.issues_of_kind(griffe.SurfaceIssueKind.CYCLIC_ALIAS)
++    assert cyclic
++    assert any("thing" in issue.public_path for issue in cyclic)
++
++
++def test_canonical_path_breaks_length_ties_alphabetically() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n',
++            "aaa.py": '"""Doc."""\nfrom audpkg.bbb import tool\n\n__all__ = ["tool"]\n',
++            "bbb.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        },
++    )
++    canonical = report.canonical_paths["audpkg.bbb.tool"]
++    assert canonical == "audpkg.aaa.tool"
++
++
++def test_issues_sort_by_category_then_path() -> None:
++    report = _audit(
++        {
++            "__init__.py": (
++                '"""Doc."""\n\ndef zeta(): ...\n\ndef alpha(): ...\n\n'
++                '__all__ = ["zeta", "alpha", "ghost"]\n'
++            ),
++        },
++    )
++    keys = [(issue.kind.name, issue.public_path) for issue in report.issues]
++    assert keys == sorted(keys)
++    kinds = [issue.kind for issue in report.issues]
++    assert kinds.index(griffe.SurfaceIssueKind.DANGLING_EXPORT) < kinds.index(
++        griffe.SurfaceIssueKind.UNDOCUMENTED
++    )
++
++
++def test_private_only_reachable_objects_produce_no_issues() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n',
++            "_vault.py": 'def secret(): ...\n\nclass Hidden: ...\n',
++        },
++    )
++    assert report.issues == []
++
++
++def test_private_annotation_leak_is_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": (
++                '"""Doc."""\nfrom audpkg._impl import make\n\n__all__ = ["make"]\n'
++            ),
++            "_impl.py": (
++                'class Thing:\n    """Doc."""\n\n'
++                'def make() -> Thing:\n    """Doc."""\n'
++            ),
++        },
++    )
++    leaks = report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_LEAK)
++    assert leaks
++    assert any("Thing" in issue.details for issue in leaks)
++
++
++def test_no_leak_when_private_object_is_publicly_reexported() -> None:
++    report = _audit(
++        {
++            "__init__.py": (
++                '"""Doc."""\nfrom audpkg._impl import Thing, make\n\n'
++                '__all__ = ["Thing", "make"]\n'
++            ),
++            "_impl.py": (
++                'class Thing:\n    """Doc."""\n\n'
++                'def make() -> Thing:\n    """Doc."""\n'
++            ),
++        },
++    )
++    assert not report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_LEAK)
++
++
++def test_private_base_class_leak_is_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": (
++                '"""Doc."""\nfrom audpkg._impl import _Base\n\n\n'
++                'class Public(_Base):\n    """Doc."""\n\n\n'
++                '__all__ = ["Public"]\n'
++            ),
++            "_impl.py": 'class _Base:\n    """Doc."""\n',
++        },
++    )
++    leaks = report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_LEAK)
++    assert any(issue.public_path == "audpkg.Public" for issue in leaks)
++
++
++def test_public_definition_missing_from_all_is_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": (
++                '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n'
++                'def helper():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++            ),
++        },
++    )
++    inconsistent = report.issues_of_kind(griffe.SurfaceIssueKind.INCONSISTENT_ALL)
++    assert {issue.public_path for issue in inconsistent} == {"audpkg.helper"}
++
++
++def test_unexported_import_is_reported_as_inconsistent() -> None:
++    report = _audit(
++        {
++            "__init__.py": (
++                '"""Doc."""\nfrom audpkg.core import tool\n\n__all__ = []\n'
++            ),
++            "core.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        },
++    )
++    inconsistent = report.issues_of_kind(griffe.SurfaceIssueKind.INCONSISTENT_ALL)
++    assert any(issue.public_path == "audpkg.tool" for issue in inconsistent)
++
++
++def test_module_without_all_has_no_inconsistency_issue() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n',
++        },
++    )
++    assert not report.issues_of_kind(griffe.SurfaceIssueKind.INCONSISTENT_ALL)
++
++
++def test_render_markdown_groups_with_headings() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n\n__all__ = ["nodoc", "ghost"]\n',
++        },
++    )
++    text = report.render_markdown()
++    assert re.search(rf"^#+ .*{griffe.SurfaceIssueKind.DANGLING_EXPORT.value}.*\b1\b", text, flags=re.MULTILINE)
++    assert re.search(rf"^#+ .*{griffe.SurfaceIssueKind.UNDOCUMENTED.value}.*\b1\b", text, flags=re.MULTILINE)
++    assert "audpkg.ghost" in text
++    assert "audpkg.nodoc" in text
++    bullets = [line for line in text.splitlines() if re.match(r"^\s*[-*+] ", line)]
++    assert len(bullets) == 2
++
++
++def test_render_markdown_clean_report() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n',
++        },
++    )
++    assert "clean" in report.render_markdown()
++
++
++def test_private_origin_hint_names_canonical_when_multiply_exposed() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\nfrom audpkg._core import tool\n\n__all__ = ["tool"]\n',
++            "sub.py": '"""Doc."""\nfrom audpkg._core import tool\n\n__all__ = ["tool"]\n',
++            "_core.py": 'def tool():\n    """Doc."""\n',
++        },
++    )
++    origins = report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_ORIGIN)
++    nested = next(issue for issue in origins if issue.public_path == "audpkg.sub.tool")
++    assert "audpkg.tool" in nested.details
++
++
++def test_private_origin_details_name_canonical_public_path() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\nfrom audpkg._core import tool\n\n__all__ = ["tool"]\n',
++            "_core.py": 'def tool():\n    """Doc."""\n',
++        },
++    )
++    origin = report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_ORIGIN)[0]
++    assert "audpkg._core.tool" in origin.details
++
++
++def test_leak_details_hint_public_path_when_available() -> None:
++    report = _audit(
++        {
++            "__init__.py": (
++                '"""Doc."""\nfrom audpkg._impl import Thing\n\n\n'
++                'def make() -> Thing:\n    """Doc."""\n\n\n'
++                '__all__ = ["make"]\n'
++            ),
++            "_impl.py": 'class Thing:\n    """Doc."""\n',
++        },
++    )
++    leaks = report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_LEAK)
++    assert leaks
++    assert any("audpkg._impl.Thing" in issue.details for issue in leaks)
++
++
++def _run_api(tmp_path, modules: dict[str, str], *args: str) -> tuple[int, str, str]:
++    import io
++    from contextlib import redirect_stderr, redirect_stdout
++
++    from griffecli import main
++
++    package = tmp_path / "audclipkg"
++    package.mkdir(exist_ok=True)
++    for name, code in modules.items():
++        (package / name).write_text(code, encoding="utf8")
++    out, err = io.StringIO(), io.StringIO()
++    with redirect_stdout(out), redirect_stderr(err):
++        exit_code = main(["api", "audclipkg", "-s", str(tmp_path), *args])
++    return exit_code, out.getvalue(), err.getvalue()
++
++
++def test_cli_api_clean_package_exits_zero(tmp_path) -> None:
++    exit_code, _, err = _run_api(
++        tmp_path,
++        {"__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n'},
++    )
++    assert exit_code == 0
++    assert err == ""
++
++
++def test_cli_api_reports_issues_and_exits_nonzero(tmp_path) -> None:
++    exit_code, _, err = _run_api(
++        tmp_path,
++        {"__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n'},
++    )
++    assert exit_code == 1
++    assert "audclipkg.nodoc" in err
++
++
++def test_cli_api_fail_on_gates_exit_code(tmp_path) -> None:
++    modules = {"__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n'}
++    exit_code, _, _ = _run_api(tmp_path, modules, "--fail-on", "dangling-export")
++    assert exit_code == 0
++    exit_code, _, _ = _run_api(tmp_path, modules, "--fail-on", "undocumented")
++    assert exit_code == 1
++
++
++def test_cli_api_json_output(tmp_path) -> None:
++    exit_code, out, _ = _run_api(
++        tmp_path,
++        {"__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n'},
++        "--json",
++    )
++    assert exit_code == 1
++    payload = json.loads(out)
++    assert payload["package"] == "audclipkg"
++    assert any(issue["public_path"] == "audclipkg.nodoc" for issue in payload["issues"])
++
++
++def test_cli_api_markdown_output(tmp_path) -> None:
++    exit_code, _, err = _run_api(
++        tmp_path,
++        {"__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n'},
++        "--markdown",
++    )
++    assert exit_code == 1
++    assert re.search(r"^#+ ", err, flags=re.MULTILINE)
++    assert "audclipkg.nodoc" in err
++
++
++def test_render_text_groups_by_category_with_counts() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n\n__all__ = ["nodoc", "ghost"]\n',
++        },
++    )
++    text = report.render_text()
++    assert griffe.SurfaceIssueKind.DANGLING_EXPORT.value in text
++    assert griffe.SurfaceIssueKind.UNDOCUMENTED.value in text
++    assert re.search(rf"{griffe.SurfaceIssueKind.DANGLING_EXPORT.value}.*\b1\b", text)
++    assert "audpkg.ghost" in text
++    assert "audpkg.nodoc" in text
++
++
++def test_render_text_clean_report() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n',
++        },
++    )
++    assert "clean" in report.render_text()
++
++
++def test_counts_property() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n\ndef other(): ...\n',
++        },
++    )
++    assert report.counts == {griffe.SurfaceIssueKind.UNDOCUMENTED.name: 2}
+diff --git a/test.sh b/test.sh
+new file mode 100755
+index 0000000..bfce83d
+--- /dev/null
++++ b/test.sh
+@@ -0,0 +1,45 @@
++#!/usr/bin/env bash
++set -uo pipefail
++
++OUTPUT_PATH=""
++MODE=""
++
++while [[ $# -gt 0 ]]; do
++    case "$1" in
++        --output_path)
++            OUTPUT_PATH="$2"
++            shift 2
++            ;;
++        base|new)
++            MODE="$1"
++            shift
++            ;;
++        *)
++            echo "unknown argument: $1" >&2
++            exit 2
++            ;;
++    esac
++done
++
++if [[ -z "$OUTPUT_PATH" || -z "$MODE" ]]; then
++    echo "usage: test.sh --output_path <path> {base|new}" >&2
++    exit 2
++fi
++
++cd "$(dirname "$0")/packages/griffelib"
++
++NEW_TESTS="tests/test_exposure_audit.py"
++
++case "$MODE" in
++    base)
++        python3 -m pytest tests/ -o addopts= -v \
++            --ignore=tests/test_stdlib.py \
++            --ignore=tests/test_api.py \
++            --ignore="$NEW_TESTS" \
++            --junitxml="$OUTPUT_PATH"
++        ;;
++    new)
++        python3 -m pytest "$NEW_TESTS" -o addopts= -v \
++            --junitxml="$OUTPUT_PATH"
++        ;;
++esac
