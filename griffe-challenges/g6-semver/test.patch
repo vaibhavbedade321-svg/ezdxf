@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..5a97d1e
+index 0000000..0a460ad
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,587 @@
+@@ -0,0 +1,630 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -309,16 +309,31 @@ index 0000000..5a97d1e
 +    assert report.additions == ["helper"]
 +
 +
-+def test_bump_between_forwards_load_options(tmp_path) -> None:
++def test_bump_between_forwards_load_options(tmp_path, monkeypatch) -> None:
++    # Spy on the loader to prove the extra options reach both the old and the new
++    # load, not merely that the wrapper accepts them.
++    from griffe._internal import loader
++
++    calls: list[dict] = []
++    real_load = loader.load
++
++    def spy(*args, **kwargs):
++        calls.append(kwargs)
++        return real_load(*args, **kwargs)
++
++    monkeypatch.setattr(loader, "load", spy)
++
 +    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    old_path = _write_version(tmp_path, "old", code)
 +    new_path = _write_version(tmp_path, "new", code)
-+    # allow_inspection is a real load() keyword; the convenience wrapper must
-+    # forward it through to the loader rather than swallowing or rejecting it.
 +    report = griffe.bump_between(
 +        "semverpkg", old_path, new_path, allow_inspection=False
 +    )
 +    assert report.bump is griffe.Bump.PATCH
++    assert len(calls) == 2
++    assert all(call.get("allow_inspection") is False for call in calls)
++    search_paths = {tuple(call.get("search_paths") or ()) for call in calls}
++    assert search_paths == {(old_path,), (new_path,)}
 +
 +
 +def test_reexport_tracks_the_exported_name(tmp_path) -> None:
@@ -361,6 +376,9 @@ index 0000000..5a97d1e
 +
 +
 +def test_reexported_module_member_removal_is_major() -> None:
++    # A member deleted from a re-exported module is a real deletion the detector
++    # catches, so it is reported once, as BREAKING, under the exported path — not
++    # a second time as a removal, and never under the private definition path.
 +    old = {
 +        "__init__.py": 'from semold import _sub as api\n__all__ = ["api"]\n',
 +        "_sub.py": 'def a():\n    """Doc."""\n\ndef b():\n    """Doc."""\n',
@@ -371,7 +389,32 @@ index 0000000..5a97d1e
 +    }
 +    report = _bump_multi(old, new)
 +    assert report.bump is griffe.Bump.MAJOR
-+    assert "api.b" in report.removals
++    breaking_paths = [c.path for c in report.changes_of_kind(griffe.ChangeKind.BREAKING)]
++    assert "api.b" in breaking_paths
++    assert report.removals == []
++    assert not any("_sub" in change.path for change in report.changes)
++
++
++def test_reexported_class_member_removal_is_major() -> None:
++    # Mirror of the module case for a method deleted from a re-exported class:
++    # reported once, as BREAKING, under the exported path.
++    old = {
++        "__init__.py": 'from semold._impl import Tool\n__all__ = ["Tool"]\n',
++        "_impl.py": (
++            'class Tool:\n    """Doc."""\n\n'
++            '    def run(self):\n        """Doc."""\n\n'
++            '    def stop(self):\n        """Doc."""\n'
++        ),
++    }
++    new = {
++        "__init__.py": 'from semnew._impl import Tool\n__all__ = ["Tool"]\n',
++        "_impl.py": 'class Tool:\n    """Doc."""\n\n    def run(self):\n        """Doc."""\n',
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    breaking_paths = [c.path for c in report.changes_of_kind(griffe.ChangeKind.BREAKING)]
++    assert "Tool.stop" in breaking_paths
++    assert not any("_impl" in change.path for change in report.changes)
 +
 +
 +def test_changes_carry_nonempty_detail() -> None:

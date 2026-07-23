@@ -199,10 +199,10 @@ index 17e346a..11fa729 100644
 +    """A signature gained an optional capability without breaking callers."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 0000000..2e5a77b
+index 0000000..daee59b
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,452 @@
+@@ -0,0 +1,465 @@
 +# This module recommends a semantic version bump between two versions of a
 +# package. Breaking changes and removals force a major bump, additions and
 +# backward-compatible signature expansions a minor bump, and anything else a
@@ -608,15 +608,28 @@ index 0000000..2e5a77b
 +        The bump report.
 +    """
 +    breaking = list(find_breaking_changes(old, new))
-+    breaking_paths = {_relative(breakage.obj.path) for breakage in breaking}
 +
 +    old_index = _public_index(old)
 +    new_index = _public_index(new)
 +
++    # The breaking-change detector reports objects under their canonical
++    # definition path, but re-exported objects are compared here under the name
++    # they are exposed as. Map canonical paths back to the exported surface so a
++    # breakage and a surface change for the same object share one path and are
++    # not counted twice, and so no private definition path leaks into the report.
++    to_surface = {_relative(obj.path): path for path, obj in old_index.items()}
++    to_surface.update({_relative(obj.path): path for path, obj in new_index.items()})
++
++    def _surface(obj: Object) -> str:
++        relative = _relative(obj.path)
++        return to_surface.get(relative, relative)
++
++    breaking_paths = {_surface(breakage.obj) for breakage in breaking}
++
 +    changes: list[Change] = []
 +    for breakage in breaking:
 +        changes.append(
-+            Change(ChangeKind.BREAKING, _relative(breakage.obj.path), breakage.kind.value),
++            Change(ChangeKind.BREAKING, _surface(breakage.obj), breakage.kind.value),
 +        )
 +    for path, old_obj in old_index.items():
 +        if path not in new_index and path not in breaking_paths:
