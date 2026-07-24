@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_substitution_check.py b/packages/griffelib/tests/test_substitution_check.py
 new file mode 100644
-index 0000000..1e0a4f6
+index 0000000..fbaf8d1
 --- /dev/null
 +++ b/packages/griffelib/tests/test_substitution_check.py
-@@ -0,0 +1,703 @@
+@@ -0,0 +1,718 @@
 +"""Tests for the override signature compatibility check."""
 +
 +from __future__ import annotations
@@ -455,6 +455,21 @@ index 0000000..1e0a4f6
 +        from missing_module import MysteryBase
 +
 +        class Child(MysteryBase):
++            def process(self, data): ...
++        """,
++    )
++    assert issues == []
++
++
++def test_class_with_any_unresolved_base_is_skipped() -> None:
++    issues = _issues(
++        """
++        from missing_module import MysteryBase
++
++        class Base:
++            def process(self, data, extra): ...
++
++        class Child(MysteryBase, Base):
 +            def process(self, data): ...
 +        """,
 +    )
