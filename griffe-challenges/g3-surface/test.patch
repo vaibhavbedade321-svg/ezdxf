@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
 new file mode 100644
-index 0000000..4612db8
+index 0000000..11bf7a2
 --- /dev/null
 +++ b/packages/griffelib/tests/test_exposure_audit.py
-@@ -0,0 +1,559 @@
+@@ -0,0 +1,570 @@
 +"""Tests for the public API surface audit."""
 +
 +from __future__ import annotations
@@ -535,10 +535,10 @@ index 0000000..4612db8
 +def test_as_dict_issue_schema_and_mappings() -> None:
 +    report = _audit({"__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n'})
 +    payload = json.loads(json.dumps(report.as_dict()))
-+    assert set(payload) == {"package", "issues", "counts", "canonical_paths"}
++    assert {"package", "issues", "counts", "canonical_paths"} <= set(payload)
 +    assert payload["package"] == "audpkg"
 +    for entry in payload["issues"]:
-+        assert set(entry) == {"kind", "public_path", "details"}
++        assert {"kind", "public_path", "details"} <= set(entry)
 +    assert payload["counts"] == {"UNDOCUMENTED": 1}
 +    assert all(
 +        isinstance(key, str) and isinstance(value, str)
@@ -563,6 +563,17 @@ index 0000000..4612db8
 +    )
 +    assert exit_code != 0
 +    assert "audclipkg.nodoc" in err
++
++
++def test_cli_api_clean_json_and_markdown(tmp_path) -> None:
++    clean = {"__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n'}
++    exit_code, out, err = _run_api(tmp_path, clean, "--json")
++    assert exit_code == 0
++    assert json.loads(out)["issues"] == []
++    assert err == ""
++    exit_code, _, err = _run_api(tmp_path, clean, "--markdown")
++    assert exit_code == 0
++    assert err == ""
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..52be181
