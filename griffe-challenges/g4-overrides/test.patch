@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_substitution_check.py b/packages/griffelib/tests/test_substitution_check.py
 new file mode 100644
-index 0000000..ee6a018
+index 0000000..0d006c5
 --- /dev/null
 +++ b/packages/griffelib/tests/test_substitution_check.py
-@@ -0,0 +1,539 @@
+@@ -0,0 +1,575 @@
 +"""Tests for the override signature compatibility check."""
 +
 +from __future__ import annotations
@@ -76,6 +76,19 @@ index 0000000..ee6a018
 +
 +        class Child(Base):
 +            def process(self, data, **kwargs): ...
++        """,
++    )
++    assert issues == []
++
++
++def test_removed_positional_parameter_absorbed_by_args_is_compatible() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data, extra, /): ...
++
++        class Child(Base):
++            def process(self, data, /, *args): ...
 +        """,
 +    )
 +    assert issues == []
@@ -474,6 +487,23 @@ index 0000000..ee6a018
 +    assert "ovrpkg.Base.process" in text
 +
 +
++def test_issue_explain_names_both_paths_and_equals_str() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data, extra): ...
++
++        class Child(Base):
++            def process(self, data): ...
++        """,
++    )
++    issue = issues[0]
++    text = issue.explain()
++    assert "ovrpkg.Child.process" in text
++    assert "ovrpkg.Base.process" in text
++    assert str(issue) == text
++
++
 +def _run_overrides(tmp_path, code: str, *args: str) -> tuple[int, str, str]:
 +    import io
 +    from contextlib import redirect_stderr, redirect_stdout
@@ -543,6 +573,12 @@ index 0000000..ee6a018
 +    assert exit_code == 1
 +    payload = json.loads(out)
 +    assert payload[0]["method_path"] == "ovrclipkg.Child.process"
++
++
++def test_public_api_is_importable() -> None:
++    assert hasattr(griffe, "check_overrides")
++    assert hasattr(griffe, "OverrideIssue")
++    assert hasattr(griffe, "OverrideIssueKind")
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..379056a
