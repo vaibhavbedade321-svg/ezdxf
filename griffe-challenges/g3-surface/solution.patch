@@ -168,10 +168,10 @@ index a559e0f..18739e4 100644
      "BuiltinModuleError",
      "Class",
 diff --git a/packages/griffelib/src/griffe/_internal/enumerations.py b/packages/griffelib/src/griffe/_internal/enumerations.py
-index 17e346a..d5a2ae1 100644
+index 17e346a..a632fe9 100644
 --- a/packages/griffelib/src/griffe/_internal/enumerations.py
 +++ b/packages/griffelib/src/griffe/_internal/enumerations.py
-@@ -150,6 +150,25 @@ class BreakageKind(str, Enum):
+@@ -150,6 +150,27 @@ class BreakageKind(str, Enum):
      """Base class was removed"""
  
  
@@ -192,6 +192,8 @@ index 17e346a..d5a2ae1 100644
 +    """Public signature references a private object"""
 +    INCONSISTENT_ALL = "Public definition is missing from its module's __all__"
 +    """Public definition is missing from its module's __all__"""
++    MUTABLE_DEFAULT = "Public callable has a mutable default argument"
++    """Public callable has a mutable default argument"""
 +
 +
  class Parser(str, Enum):
@@ -199,10 +201,10 @@ index 17e346a..d5a2ae1 100644
  
 diff --git a/packages/griffelib/src/griffe/_internal/surface.py b/packages/griffelib/src/griffe/_internal/surface.py
 new file mode 100644
-index 0000000..35fe131
+index 0000000..734413a
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/surface.py
-@@ -0,0 +1,389 @@
+@@ -0,0 +1,464 @@
 +# This module computes the public API surface of a package and audits it.
 +# Re-export chains are resolved to their final targets so the audit sees
 +# the objects a user actually reaches through public paths.
@@ -214,6 +216,7 @@ index 0000000..35fe131
 +from griffe._internal.enumerations import SurfaceIssueKind
 +from griffe._internal.exceptions import AliasResolutionError, CyclicAliasError, NameResolutionError
 +from griffe._internal.expressions import Expr, ExprName
++from griffe._internal.expressions import ExprDict, ExprList, ExprSet
 +
 +if TYPE_CHECKING:
 +    from collections.abc import Iterator
@@ -305,6 +308,55 @@ index 0000000..35fe131
 +            The matching issues.
 +        """
 +        return [issue for issue in self.issues if issue.kind is kind]
++
++    def filter(self, *kinds: SurfaceIssueKind) -> SurfaceReport:
++        """Return a report keeping only the issues of the given kinds.
++
++        Parameters:
++            *kinds: The kinds to keep.
++
++        Returns:
++            A new report over the matching issues.
++        """
++        keep = set(kinds)
++        kept = [issue for issue in self.issues if issue.kind in keep]
++        return SurfaceReport(self.package, kept, self.canonical_paths)
++
++    def by_module(self) -> dict[str, list[SurfaceIssue]]:
++        """Group the issues by the top-level module they belong to.
++
++        The key is the first path segment under the package, or the package
++        name for issues reported at the top level. Modules without issues are
++        omitted and each group keeps the report's overall order.
++
++        Returns:
++            A mapping from module name to its issues.
++        """
++        groups: dict[str, list[SurfaceIssue]] = {}
++        prefix = f"{self.package}."
++        for issue in self.issues:
++            path = issue.public_path
++            rest = path[len(prefix):] if path.startswith(prefix) else path
++            parts = rest.split(".")
++            key = parts[0] if len(parts) > 1 else self.package
++            groups.setdefault(key, []).append(issue)
++        return groups
++
++    @property
++    def affected_paths(self) -> list[str]:
++        """The distinct public paths carrying at least one issue, sorted."""
++        return sorted({issue.public_path for issue in self.issues})
++
++    def summary(self) -> str:
++        """Return a one-line summary naming the package and issue count.
++
++        Returns:
++            A single-line message; a clean surface says so.
++        """
++        total = len(self.issues)
++        if not total:
++            return f"{self.package}: clean"
++        return f"{self.package}: {total} issues in {len(self.counts)} categories"
 +
 +    @property
 +    def counts(self) -> dict[str, int]:
@@ -408,6 +460,20 @@ index 0000000..35fe131
 +            yield from _walk_public(member, f"{public_path}.{name}")
 +
 +
++def _mutable_default_params(func: Object) -> list[str]:
++    """Return the names of parameters whose default is a mutable literal.
++
++    List, dict and set literals are shared across every call, so a mutable
++    default is a public-surface defect; tuple and scalar defaults are immutable
++    and ignored.
++    """
++    names: list[str] = []
++    for parameter in func.parameters:
++        if isinstance(parameter.default, (ExprList, ExprDict, ExprSet)):
++            names.append(parameter.name)
++    return names
++
++
 +def audit_surface(package: Module) -> SurfaceReport:
 +    """Audit the public API surface of a package.
 +
@@ -476,6 +542,17 @@ index 0000000..35fe131
 +                    details=target.canonical_path,
 +                ),
 +            )
++
++        if target.is_function:
++            mutable = _mutable_default_params(target)  # ty:ignore[invalid-argument-type]
++            if mutable:
++                issues.append(
++                    SurfaceIssue(
++                        SurfaceIssueKind.MUTABLE_DEFAULT,
++                        public_path,
++                        details="mutable default(s): " + ", ".join(mutable),
++                    ),
++                )
 +
 +    for module_path, module in _iter_modules(package):
 +        exports = module.exports
@@ -592,3 +669,4 @@ index 0000000..35fe131
 +        module_path = canonical.rsplit(".", 1)[0]
 +        if _module_is_private(module_path, package):
 +            yield canonical
+\ No newline at end of file

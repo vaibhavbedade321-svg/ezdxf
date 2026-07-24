@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
 new file mode 100644
-index 0000000..467384b
+index 0000000..baa75ae
 --- /dev/null
 +++ b/packages/griffelib/tests/test_exposure_audit.py
-@@ -0,0 +1,469 @@
+@@ -0,0 +1,515 @@
 +"""Tests for the public API surface audit."""
 +
 +from __future__ import annotations
@@ -473,6 +473,52 @@ index 0000000..467384b
 +        },
 +    )
 +    assert report.counts == {griffe.SurfaceIssueKind.UNDOCUMENTED.name: 2}
++
++
++def test_mutable_default_argument_is_reported() -> None:
++    report = _audit(
++        {"__init__.py": '"""Doc."""\n\ndef tool(items=[]):\n    """Doc."""\n'},
++    )
++    assert _paths(report, griffe.SurfaceIssueKind.MUTABLE_DEFAULT) == {"audpkg.tool"}
++
++
++def test_immutable_defaults_are_not_reported() -> None:
++    report = _audit(
++        {"__init__.py": '"""Doc."""\n\ndef tool(a=(), b=1, c="x"):\n    """Doc."""\n'},
++    )
++    assert griffe.SurfaceIssueKind.MUTABLE_DEFAULT not in _kinds(report)
++
++
++def test_filter_keeps_only_given_kinds() -> None:
++    report = _audit(
++        {"__init__.py": '"""Doc."""\n\ndef tool(items=[]):\n    pass\n'},
++    )
++    only = report.filter(griffe.SurfaceIssueKind.MUTABLE_DEFAULT)
++    assert _kinds(only) == {griffe.SurfaceIssueKind.MUTABLE_DEFAULT}
++    assert len(only.issues) == 1
++
++
++def test_by_module_groups_issues() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n',
++            "sub.py": '"""Doc."""\n\ndef helper(x=[]):\n    """Doc."""\n',
++        },
++    )
++    groups = report.by_module()
++    assert "sub" in groups
++    assert all(issue.public_path.startswith("audpkg.sub") for issue in groups["sub"])
++
++
++def test_summary_and_affected_paths() -> None:
++    report = _audit(
++        {"__init__.py": '"""Doc."""\n\ndef tool(items=[]):\n    """Doc."""\n'},
++    )
++    assert "audpkg" in report.summary()
++    assert report.affected_paths == ["audpkg.tool"]
++    clean = _audit({"__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n'})
++    assert "clean" in clean.summary()
++    assert clean.affected_paths == []
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..bfce83d
