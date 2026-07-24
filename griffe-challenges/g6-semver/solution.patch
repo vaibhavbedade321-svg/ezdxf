@@ -233,7 +233,7 @@ index 17e346a..32a22da 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 0000000..c88d40f
+index 0000000..34c0f48
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
 @@ -0,0 +1,636 @@
@@ -281,7 +281,7 @@ index 0000000..c88d40f
 +)
 +
 +
-+class Change:
++class _Change:
 +    """A single public API change between two versions of a package."""
 +
 +    def __init__(self, kind: ChangeKind, path: str, detail: str) -> None:
@@ -303,10 +303,10 @@ index 0000000..c88d40f
 +        return f"{self.kind.value}: {self.path} ({self.detail})"
 +
 +    def __repr__(self) -> str:
-+        return f"Change(kind={self.kind.value!r}, path={self.path!r}, detail={self.detail!r})"
++        return f"_Change(kind={self.kind.value!r}, path={self.path!r}, detail={self.detail!r})"
 +
 +    def __eq__(self, other: object) -> bool:
-+        if not isinstance(other, Change):
++        if not isinstance(other, _Change):
 +            return NotImplemented
 +        return (self.kind, self.path, self.detail) == (other.kind, other.path, other.detail)
 +
@@ -333,7 +333,7 @@ index 0000000..c88d40f
 +class BumpReport:
 +    """The recommended version bump between two versions of a package."""
 +
-+    def __init__(self, bump: Bump, breaking: list[Breakage], changes: list[Change]) -> None:
++    def __init__(self, bump: Bump, breaking: list[Breakage], changes: list[_Change]) -> None:
 +        """Initialize the report.
 +
 +        Parameters:
@@ -385,7 +385,7 @@ index 0000000..c88d40f
 +            result[change.kind.value] = result.get(change.kind.value, 0) + 1
 +        return result
 +
-+    def changes_of_kind(self, kind: ChangeKind) -> list[Change]:
++    def changes_of_kind(self, kind: ChangeKind) -> list[_Change]:
 +        """Return the changes of one kind, in report order.
 +
 +        Parameters:
@@ -396,14 +396,14 @@ index 0000000..c88d40f
 +        """
 +        return [change for change in self.changes if change.kind is kind]
 +
-+    def changelog(self) -> dict[str, list[Change]]:
++    def changelog(self) -> dict[str, list[_Change]]:
 +        """Group the changes by the top-level name they belong to.
 +
 +        Returns:
 +            A mapping from each top-level public name to its changes, in the
 +            same order the changes appear in the report.
 +        """
-+        grouped: dict[str, list[Change]] = {}
++        grouped: dict[str, list[_Change]] = {}
 +        for change in self.changes:
 +            top = change.path.split(".", 1)[0]
 +            grouped.setdefault(top, []).append(change)
@@ -445,7 +445,7 @@ index 0000000..c88d40f
 +            lines.append("")
 +            lines.append("No public API changes.")
 +            return "\n".join(lines)
-+        by_kind: dict[ChangeKind, list[Change]] = {}
++        by_kind: dict[ChangeKind, list[_Change]] = {}
 +        for change in self.changes:
 +            by_kind.setdefault(change.kind, []).append(change)
 +        for kind in ChangeKind:
@@ -747,10 +747,10 @@ index 0000000..c88d40f
 +    return breakage.kind.value
 +
 +
-+def _dedupe(changes: list[Change]) -> list[Change]:
++def _dedupe(changes: list[_Change]) -> list[_Change]:
 +    """Drop changes that are identical in kind, path and detail, keeping order."""
-+    seen: set[Change] = set()
-+    unique: list[Change] = []
++    seen: set[_Change] = set()
++    unique: list[_Change] = []
 +    for change in changes:
 +        if change in seen:
 +            continue
@@ -836,20 +836,20 @@ index 0000000..c88d40f
 +    ]
 +    breaking_paths = {_surface(breakage.obj) for breakage in breaking}
 +
-+    changes: list[Change] = []
++    changes: list[_Change] = []
 +    for breakage in breaking:
 +        changes.append(
-+            Change(ChangeKind.BREAKING, _surface(breakage.obj), _breakage_detail(breakage)),
++            _Change(ChangeKind.BREAKING, _surface(breakage.obj), _breakage_detail(breakage)),
 +        )
 +    for path, old_obj in old_index.items():
 +        if path not in new_index and path not in breaking_paths:
 +            changes.append(
-+                Change(ChangeKind.REMOVED, path, f"public {_kind_label(old_obj)} removed"),
++                _Change(ChangeKind.REMOVED, path, f"public {_kind_label(old_obj)} removed"),
 +            )
 +    for path, obj in new_index.items():
 +        if path not in old_index:
 +            changes.append(
-+                Change(ChangeKind.ADDED, path, f"public {_kind_label(obj)} added"),
++                _Change(ChangeKind.ADDED, path, f"public {_kind_label(obj)} added"),
 +            )
 +            continue
 +        if path in breaking_paths:
@@ -857,10 +857,10 @@ index 0000000..c88d40f
 +        old_obj = old_index[path]
 +        detail = _compatible_expansion(old_obj, obj)
 +        if detail is not None:
-+            changes.append(Change(ChangeKind.EXPANDED, path, detail))
++            changes.append(_Change(ChangeKind.EXPANDED, path, detail))
 +        deprecation = _deprecation_added(old_obj, obj)
 +        if deprecation is not None:
-+            changes.append(Change(ChangeKind.DEPRECATED, path, deprecation))
++            changes.append(_Change(ChangeKind.DEPRECATED, path, deprecation))
 +
 +    changes = _dedupe(changes)
 +    changes.sort(key=lambda change: (change.path, change.kind.value))

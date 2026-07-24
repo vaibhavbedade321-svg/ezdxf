@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..e4d6e17
+index 0000000..aa7a8bc
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,752 @@
+@@ -0,0 +1,807 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -309,6 +309,19 @@ index 0000000..e4d6e17
 +    assert report.additions == ["helper"]
 +
 +
++def test_bump_between_honors_ignore(tmp_path) -> None:
++    old_path = _write_version(tmp_path, "old", 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n')
++    new_path = _write_version(
++        tmp_path,
++        "new",
++        'def tool():\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++    )
++    assert griffe.bump_between("semverpkg", old_path, new_path).bump is griffe.Bump.MINOR
++    ignored = griffe.bump_between("semverpkg", old_path, new_path, ignore=["helper"])
++    assert ignored.bump is griffe.Bump.PATCH
++    assert "helper" not in ignored.additions
++
++
 +def test_bump_between_forwards_load_options(tmp_path) -> None:
 +    class _Recorder(griffe.Extension):
 +        def __init__(self) -> None:
@@ -603,6 +616,26 @@ index 0000000..e4d6e17
 +    assert griffe.Bump.PATCH.value in output.lower()
 +
 +
++def test_cli_semver_forwards_loading_options_to_both_loads(tmp_path, monkeypatch) -> None:
++    marker = tmp_path / "loads.txt"
++    ext_dir = tmp_path / "extmod"
++    ext_dir.mkdir()
++    (ext_dir / "rec_ext.py").write_text(
++        "import griffe\n"
++        "class RecExt(griffe.Extension):\n"
++        "    def on_package(self, *, pkg, **kw):\n"
++        f"        with open({str(marker)!r}, 'a', encoding='utf8') as fh:\n"
++        "            fh.write(pkg.name + chr(10))\n",
++        encoding="utf8",
++    )
++    monkeypatch.syspath_prepend(str(ext_dir))
++    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    exit_code, _ = _run_semver(tmp_path, code, code, "--extensions", "rec_ext")
++    assert exit_code == 0
++    loads = marker.read_text(encoding="utf8").split() if marker.exists() else []
++    assert len(loads) == 2
++
++
 +def test_cli_semver_bump_rejects_malformed_version(tmp_path) -> None:
 +    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    exit_code, _ = _run_semver(tmp_path, code, code, "--bump", "not-a-version")
@@ -715,16 +748,38 @@ index 0000000..e4d6e17
 +
 +
 +def test_change_severity_maps_kind_to_level() -> None:
-+    old = 'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n'
-+    new = (
-+        'def tool(a):\n    """Doc."""\n\n'
-+        'def helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n'
-+    )
-+    report = _bump(old, new)
-+    for change in report.changes_of_kind(griffe.ChangeKind.BREAKING):
-+        assert change.severity is griffe.Bump.MAJOR
-+    for change in report.changes_of_kind(griffe.ChangeKind.ADDED):
-+        assert change.severity is griffe.Bump.MINOR
++    expected = {
++        griffe.ChangeKind.BREAKING: griffe.Bump.MAJOR,
++        griffe.ChangeKind.REMOVED: griffe.Bump.MAJOR,
++        griffe.ChangeKind.ADDED: griffe.Bump.MINOR,
++        griffe.ChangeKind.EXPANDED: griffe.Bump.MINOR,
++        griffe.ChangeKind.DEPRECATED: griffe.Bump.MINOR,
++    }
++    reports = [
++        _bump(
++            'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n',
++            'def tool(a):\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++        ),
++        _bump(
++            'def a():\n    """Doc."""\n\ndef b():\n    """Doc."""\n\n__all__ = ["a", "b"]\n',
++            'def a():\n    """Doc."""\n\ndef b():\n    """Doc."""\n\n__all__ = ["a"]\n',
++        ),
++        _bump(
++            'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n',
++            'def tool(a, b=1):\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        ),
++        _bump(
++            'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++            'from typing_extensions import deprecated\n\n'
++            '@deprecated("use other")\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        ),
++    ]
++    seen = set()
++    for report in reports:
++        for change in report.changes:
++            assert change.severity is expected[change.kind]
++            seen.add(change.kind)
++    assert seen == set(expected)
 +
 +
 +def test_gated_by_accepts_level_name() -> None:
@@ -758,10 +813,10 @@ index 0000000..e4d6e17
 +    assert report.expansions == ["x"]
 diff --git a/test.sh b/test.sh
 new file mode 100755
-index 0000000..73581df
+index 0000000..dcf581f
 --- /dev/null
 +++ b/test.sh
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,51 @@
 +#!/usr/bin/env bash
 +set -uo pipefail
 +
@@ -796,9 +851,15 @@ index 0000000..73581df
 +
 +case "$MODE" in
 +    base)
++        API_IGNORE="--ignore=tests/test_api.py"
++        if python3 -c "import mkdocstrings, unpack_typeddict" 2>/dev/null; then
++            API_IGNORE=""
++        else
++            echo "NOTE: test_api.py skipped; mkdocstrings/unpack_typeddict unavailable" >&2
++        fi
 +        python3 -m pytest tests/ -o addopts= -v \
 +            --ignore=tests/test_stdlib.py \
-+            --ignore=tests/test_api.py \
++            $API_IGNORE \
 +            --ignore="$NEW_TESTS" \
 +            --junitxml="$OUTPUT_PATH"
 +        ;;
