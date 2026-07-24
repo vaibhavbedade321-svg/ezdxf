@@ -1,3 +1,22 @@
+diff --git a/packages/griffecli/src/griffecli/__init__.py b/packages/griffecli/src/griffecli/__init__.py
+index b7c23fc..217a507 100644
+--- a/packages/griffecli/src/griffecli/__init__.py
++++ b/packages/griffecli/src/griffecli/__init__.py
+@@ -16,7 +16,7 @@ This package provides command-line tools for interacting with griffe.
+ 
+ from __future__ import annotations
+ 
+-from griffecli._internal.cli import DEFAULT_LOG_LEVEL, check, dump, get_parser, main
++from griffecli._internal.cli import DEFAULT_LOG_LEVEL, check, dump, get_parser, main, api
+ 
+ __all__ = [
+     "DEFAULT_LOG_LEVEL",
+@@ -24,4 +24,5 @@ __all__ = [
+     "dump",
+     "get_parser",
+     "main",
++    "api",
+ ]
 diff --git a/packages/griffecli/src/griffecli/_internal/cli.py b/packages/griffecli/src/griffecli/_internal/cli.py
 index 232c1e7..00d769f 100644
 --- a/packages/griffecli/src/griffecli/_internal/cli.py

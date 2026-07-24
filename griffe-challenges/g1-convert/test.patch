@@ -675,10 +675,10 @@ index 0000000..612a74c
 +    assert "Parameters:" not in content
 diff --git a/test.sh b/test.sh
 new file mode 100755
-index 0000000..431c7ff
+index 0000000..106e395
 --- /dev/null
 +++ b/test.sh
-@@ -0,0 +1,45 @@
+@@ -0,0 +1,51 @@
 +#!/usr/bin/env bash
 +set -uo pipefail
 +
@@ -713,9 +713,15 @@ index 0000000..431c7ff
 +
 +case "$MODE" in
 +    base)
++        API_IGNORE="--ignore=tests/test_api.py"
++        if python3 -c "import mkdocstrings, unpack_typeddict" 2>/dev/null; then
++            API_IGNORE=""
++        else
++            echo "NOTE: test_api.py skipped; mkdocstrings/unpack_typeddict unavailable" >&2
++        fi
 +        python3 -m pytest tests/ -o addopts= -v \
 +            --ignore=tests/test_stdlib.py \
-+            --ignore=tests/test_api.py \
++            $API_IGNORE \
 +            --ignore="$NEW_TESTS" \
 +            --junitxml="$OUTPUT_PATH"
 +        ;;
