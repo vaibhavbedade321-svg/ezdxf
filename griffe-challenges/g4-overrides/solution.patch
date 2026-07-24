@@ -208,10 +208,10 @@ index 17e346a..a1b66c3 100644
  
 diff --git a/packages/griffelib/src/griffe/_internal/overrides.py b/packages/griffelib/src/griffe/_internal/overrides.py
 new file mode 100644
-index 0000000..7ec1c79
+index 0000000..2af1c48
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/overrides.py
-@@ -0,0 +1,346 @@
+@@ -0,0 +1,350 @@
 +# This module checks method overrides for signature compatibility.
 +# A subclass method that cannot be substituted for the method it overrides
 +# breaks callers that hold the parent type.
@@ -344,9 +344,13 @@ index 0000000..7ec1c79
 +            continue
 +
 +        if parameter.name not in child_names:
-+            absorbed_positionally = parameter.kind is ParameterKind.positional_only and child_var_positional
-+            absorbed_by_keyword = parameter.kind in _KEYWORD_KINDS and child_var_keyword
-+            if not absorbed_positionally and not absorbed_by_keyword:
++            if parameter.kind is ParameterKind.positional_only:
++                absorbed = child_var_positional
++            elif parameter.kind is ParameterKind.keyword_only:
++                absorbed = child_var_keyword
++            else:
++                absorbed = child_var_positional and child_var_keyword
++            if not absorbed:
 +                yield (
 +                    OverrideIssueKind.PARAMETER_REMOVED,
 +                    f"parameter {parameter.name} is not accepted anymore",

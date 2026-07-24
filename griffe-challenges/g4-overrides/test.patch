@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_substitution_check.py b/packages/griffelib/tests/test_substitution_check.py
 new file mode 100644
-index 0000000..b37cbe5
+index 0000000..1e0a4f6
 --- /dev/null
 +++ b/packages/griffelib/tests/test_substitution_check.py
-@@ -0,0 +1,679 @@
+@@ -0,0 +1,703 @@
 +"""Tests for the override signature compatibility check."""
 +
 +from __future__ import annotations
@@ -68,8 +68,21 @@ index 0000000..b37cbe5
 +    assert issue.base_path == "ovrpkg.Base.process"
 +
 +
-+def test_removed_parameter_absorbed_by_kwargs_is_compatible() -> None:
++def test_removed_keyword_only_parameter_absorbed_by_kwargs_is_compatible() -> None:
 +    issues = _issues(
++        """
++        class Base:
++            def process(self, data, *, timeout=5): ...
++
++        class Child(Base):
++            def process(self, data, **kwargs): ...
++        """,
++    )
++    assert issues == []
++
++
++def test_positional_or_keyword_parameter_needs_both_variadics() -> None:
++    reported = _issues(
 +        """
 +        class Base:
 +            def process(self, data, timeout=5): ...
@@ -78,7 +91,18 @@ index 0000000..b37cbe5
 +            def process(self, data, **kwargs): ...
 +        """,
 +    )
-+    assert issues == []
++    assert _kinds(reported) == {griffe.OverrideIssueKind.PARAMETER_REMOVED}
++
++    absorbed = _issues(
++        """
++        class Base:
++            def process(self, data, timeout=5): ...
++
++        class Child(Base):
++            def process(self, data, *args, **kwargs): ...
++        """,
++    )
++    assert absorbed == []
 +
 +
 +def test_removed_positional_parameter_absorbed_by_args_is_compatible() -> None:
