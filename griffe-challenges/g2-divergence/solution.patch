@@ -130,10 +130,10 @@ index a559e0f..cd4750a 100644
      "logger",
 diff --git a/packages/griffelib/src/griffe/_internal/divergence.py b/packages/griffelib/src/griffe/_internal/divergence.py
 new file mode 100644
-index 0000000..d371272
+index 0000000..3e3d0b3
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/divergence.py
-@@ -0,0 +1,513 @@
+@@ -0,0 +1,515 @@
 +# This module defines the divergence report between static and dynamic analysis.
 +# The same package is loaded through both the AST visitor and the runtime
 +# inspector, and the two resulting trees are compared member by member.
@@ -603,6 +603,8 @@ index 0000000..d371272
 +                dynamic_member,  # ty:ignore[invalid-argument-type]
 +            )
 +
++        if static_member.is_module and dynamic_member.is_module:
++            yield from _compare_exports(static_member, dynamic_member)
 +        if static_member.is_class or static_member.is_module:
 +            yield from _compare_members(static_member, dynamic_member)
 +

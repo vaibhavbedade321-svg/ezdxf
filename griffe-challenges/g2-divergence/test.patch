@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_agent_parity.py b/packages/griffelib/tests/test_agent_parity.py
 new file mode 100644
-index 0000000..a3f1e36
+index 0000000..a987650
 --- /dev/null
 +++ b/packages/griffelib/tests/test_agent_parity.py
-@@ -0,0 +1,527 @@
+@@ -0,0 +1,597 @@
 +"""Tests for the static/dynamic divergence report."""
 +
 +from __future__ import annotations
@@ -531,6 +531,76 @@ index 0000000..a3f1e36
 +    payload = json.loads(captured.out)
 +    assert isinstance(payload, list)
 +    assert payload[0]["object_path"] == "dvclipkg3.func"
++
++
++def test_submodule_export_mismatch_is_reported() -> None:
++    modules = {
++        "__init__.py": '"""Doc."""\nfrom subexppkg import sub\n',
++        "sub.py": '"""Doc."""\n__all__ = ["a"]\n__all__ += [n for n in ("b",)]\n\ndef a(): ...\ndef b(): ...\n',
++    }
++    with temporary_pypackage("subexppkg", modules) as tmp_package:
++        static, dynamic = griffe.load_both("subexppkg", search_paths=[tmp_package.tmpdir])
++        divergences = list(griffe.find_divergences(static, dynamic))
++    exports = [d for d in divergences if d.kind is griffe.DivergenceKind.EXPORTS_MISMATCH]
++    assert any(d.object_path.endswith(".sub") for d in exports)
++
++
++def test_parameter_one_sided_annotation_is_not_a_divergence() -> None:
++    dynamic_missing = _divergences(
++        """
++        def deco(f):
++            def inner(a):
++                return f(a)
++            return inner
++
++        @deco
++        def func(a: int): ...
++        """,
++    )
++    assert griffe.DivergenceKind.ANNOTATION not in _kinds(dynamic_missing)
++    static_missing = _divergences(
++        """
++        def deco(f):
++            def inner(a: int):
++                return f(a)
++            return inner
++
++        @deco
++        def func(a): ...
++        """,
++    )
++    assert griffe.DivergenceKind.ANNOTATION not in _kinds(static_missing)
++
++
++def test_cli_runtime_json_clean_package(capsys: pytest.CaptureFixture) -> None:
++    from griffecli import main
++
++    code = 'def func(a: int, b: str = "x") -> bool:\n    return True\n'
++    with temporary_pypackage("dvcleanpkg", {"__init__.py": code}) as tmp_package:
++        exit_code = main(
++            ["check", "--runtime", "--json", "-s", str(tmp_package.tmpdir), tmp_package.name],
++        )
++    captured = capsys.readouterr()
++    assert exit_code == 0
++    assert captured.out.strip() == "[]"
++    assert captured.err == ""
++
++
++def test_divergence_kind_values_are_descriptive_strings() -> None:
++    for kind in griffe.DivergenceKind:
++        assert isinstance(kind.value, str)
++        assert kind.value
++    divergences = _divergences(
++        """
++        import sys
++
++        if sys.maxsize < 0:
++            def impossible() -> None: ...
++        """,
++    )
++    divergence = divergences[0]
++    assert divergence.as_dict()["kind"] == divergence.kind.value
++    assert divergence.kind.value in divergence.explain()
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..cdca388
