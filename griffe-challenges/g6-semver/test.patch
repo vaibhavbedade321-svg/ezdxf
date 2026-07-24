@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..aa7a8bc
+index 0000000..0a5c851
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,807 @@
+@@ -0,0 +1,834 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -593,6 +593,11 @@ index 0000000..aa7a8bc
 +    new = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    exit_code, _ = _run_semver(tmp_path, old, new, "--fail-on", "major")
 +    assert exit_code == 1
++    # A major recommendation also meets lower thresholds, not just its own level.
++    exit_code, _ = _run_semver(tmp_path, old, new, "--fail-on", "minor")
++    assert exit_code == 1
++    exit_code, _ = _run_semver(tmp_path, old, new, "--fail-on", "patch")
++    assert exit_code == 1
 +    exit_code, _ = _run_semver(tmp_path, old, old, "--fail-on", "major")
 +    assert exit_code == 0
 +
@@ -697,6 +702,28 @@ index 0000000..aa7a8bc
 +        temporary_visited_package("semold", {"__init__.py": old}) as old_module,
 +        temporary_visited_package("semnew", {"__init__.py": new}) as new_module,
 +    ):
++        report = griffe.recommend_bump(old_module, new_module, ignore=["Tool"])
++    assert report.bump is griffe.Bump.PATCH
++    assert report.changes == []
++
++
++def test_ignored_reexported_container_excludes_nested_changes() -> None:
++    old = {
++        "__init__.py": 'from semold._impl import Tool\n__all__ = ["Tool"]\n',
++        "_impl.py": 'class Tool:\n    """Doc."""\n\n    def run(self):\n        """Doc."""\n',
++    }
++    new = {
++        "__init__.py": 'from semnew._impl import Tool\n__all__ = ["Tool"]\n',
++        "_impl.py": (
++            'class Tool:\n    """Doc."""\n\n    def run(self):\n        """Doc."""\n\n'
++            '    def stop(self):\n        """Doc."""\n'
++        ),
++    }
++    with (
++        temporary_visited_package("semold", old) as old_module,
++        temporary_visited_package("semnew", new) as new_module,
++    ):
++        assert griffe.recommend_bump(old_module, new_module).bump is griffe.Bump.MINOR
 +        report = griffe.recommend_bump(old_module, new_module, ignore=["Tool"])
 +    assert report.bump is griffe.Bump.PATCH
 +    assert report.changes == []
