@@ -220,10 +220,10 @@ index 17e346a..a632fe9 100644
  
 diff --git a/packages/griffelib/src/griffe/_internal/surface.py b/packages/griffelib/src/griffe/_internal/surface.py
 new file mode 100644
-index 0000000..d28fc7e
+index 0000000..a68ae63
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/surface.py
-@@ -0,0 +1,444 @@
+@@ -0,0 +1,486 @@
 +# This module computes the public API surface of a package and audits it.
 +# Re-export chains are resolved to their final targets so the audit sees
 +# the objects a user actually reaches through public paths.
@@ -450,13 +450,49 @@ index 0000000..d28fc7e
 +def _walk_public(
 +    obj: Object | Alias,
 +    public_path: str,
++    seen: frozenset[str] = frozenset(),
 +) -> Iterator[tuple[str, Object | Alias]]:
 +    yield public_path, obj
 +    if obj.is_alias:
++        try:
++            target = obj.final_target  # ty:ignore[unresolved-attribute]
++        except (AliasResolutionError, CyclicAliasError):
++            return
++    else:
++        target = obj
++    if not (target.is_module or target.is_class):
 +        return
-+    if obj.is_module or obj.is_class:
-+        for name, member in _public_members(obj):  # ty:ignore[invalid-argument-type]
-+            yield from _walk_public(member, f"{public_path}.{name}")
++    # A re-exported class or module is traversed through its target so that
++    # its public members are audited under the public (alias) path. The seen
++    # set guards against cycles in self-referential re-export chains.
++    if target.canonical_path in seen:
++        return
++    seen = seen | {target.canonical_path}
++    for name, member in _public_members(target):
++        yield from _walk_public(member, f"{public_path}.{name}", seen)
++
++
++_MUTABLE_DEFAULT_CALLS = frozenset({"list()", "dict()", "set()"})
++
++
++def _is_mutable_default(default: object) -> bool:
++    """Whether a parameter default is a shared mutable value.
++
++    Static analysis yields `ExprList`/`ExprDict`/`ExprSet` nodes, while dynamic
++    inspection stores defaults as their `repr(...)` strings; both forms are
++    recognized. List, dict and set literals (and their constructor calls) are
++    mutable and shared across calls; tuples and scalars are immutable.
++    """
++    if isinstance(default, (ExprList, ExprDict, ExprSet)):
++        return True
++    if isinstance(default, str):
++        text = default.strip()
++        if text in _MUTABLE_DEFAULT_CALLS:
++            return True
++        # `[...]` list, `{...}` dict or set literal (empty `{}` is a dict).
++        if len(text) >= 2 and text[0] in "[{" and text[-1] in "]}":
++            return True
++    return False
 +
 +
 +def _mutable_default_params(func: Object) -> list[str]:
@@ -468,7 +504,7 @@ index 0000000..d28fc7e
 +    """
 +    names: list[str] = []
 +    for parameter in func.parameters:
-+        if isinstance(parameter.default, (ExprList, ExprDict, ExprSet)):
++        if _is_mutable_default(parameter.default):
 +            names.append(parameter.name)
 +    return names
 +
@@ -495,6 +531,7 @@ index 0000000..d28fc7e
 +    reachable: dict[str, list[str]] = {}
 +    signature_refs: list[tuple[str, Expr]] = []
 +    private_origins: list[tuple[str, str]] = []
++    private_origin_paths: set[str] = set()
 +
 +    for public_path, obj in _walk_public(package, package.name):
 +        if obj.is_alias:
@@ -528,7 +565,12 @@ index 0000000..d28fc7e
 +            public_path,
 +            package.name,
 +        ):
-+            private_origins.append((public_path, target.canonical_path))
++            # Report the re-export entry point only; nested members reached
++            # through an already-flagged private re-export are not repeated.
++            parent_path = public_path.rsplit(".", 1)[0]
++            if parent_path not in private_origin_paths:
++                private_origins.append((public_path, target.canonical_path))
++            private_origin_paths.add(public_path)
 +
 +        for expr in _signature_expressions(target):
 +            signature_refs.append((public_path, expr))

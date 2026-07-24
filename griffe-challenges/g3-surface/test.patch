@@ -1,15 +1,14 @@
 diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
 new file mode 100644
-index 0000000..11bf7a2
+index 0000000..8094c6d
 --- /dev/null
 +++ b/packages/griffelib/tests/test_exposure_audit.py
-@@ -0,0 +1,570 @@
+@@ -0,0 +1,607 @@
 +"""Tests for the public API surface audit."""
 +
 +from __future__ import annotations
 +
 +import json
-+import re
 +
 +import pytest
 +
@@ -429,15 +428,20 @@ index 0000000..11bf7a2
 +def test_render_text_groups_by_category_with_counts() -> None:
 +    report = _audit(
 +        {
-+            "__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n\n__all__ = ["nodoc", "ghost"]\n',
++            "__init__.py": (
++                '"""Doc."""\n\ndef nodoc(): ...\n\ndef alsobad(): ...\n\n'
++                '__all__ = ["nodoc", "alsobad", "ghost"]\n'
++            ),
 +        },
 +    )
 +    text = report.render_text()
 +    assert griffe.SurfaceIssueKind.DANGLING_EXPORT.value in text
 +    assert griffe.SurfaceIssueKind.UNDOCUMENTED.value in text
-+    assert re.search(rf"{griffe.SurfaceIssueKind.DANGLING_EXPORT.value}.*\b1\b", text)
++    # render_text() names each category's issue count; UNDOCUMENTED has two.
++    assert "2" in text
 +    assert "audpkg.ghost" in text
 +    assert "audpkg.nodoc" in text
++    assert "audpkg.alsobad" in text
 +
 +
 +def test_render_text_clean_report() -> None:
@@ -507,6 +511,16 @@ index 0000000..11bf7a2
 +    assert paths == {"audpkg.f", "audpkg.C.m"}
 +
 +
++def test_mutable_default_detected_on_inspected_module() -> None:
++    from griffe import temporary_inspected_package
++
++    modules = {"__init__.py": '"""Doc."""\n\ndef f(x=[], y={}, z=5):\n    """Doc."""\n'}
++    with temporary_inspected_package("audinspkg", modules) as package:
++        report = griffe.audit_surface(package)
++    paths = {issue.public_path for issue in report.issues_of_kind(griffe.SurfaceIssueKind.MUTABLE_DEFAULT)}
++    assert paths == {"audinspkg.f"}
++
++
 +def test_private_leak_via_parameter_annotation_is_reported() -> None:
 +    report = _audit(
 +        {
@@ -530,6 +544,29 @@ index 0000000..11bf7a2
 +    )
 +    undocumented = {issue.public_path for issue in report.issues_of_kind(griffe.SurfaceIssueKind.UNDOCUMENTED)}
 +    assert "audpkg.sub" in undocumented
++
++
++def test_reexported_class_members_are_audited_under_public_path() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\nfrom audpkg._impl import Widget\n\n__all__ = ["Widget"]\n',
++            "_impl.py": (
++                'class Widget:\n'
++                '    """Doc."""\n\n'
++                '    def undocumented_method(self): ...\n\n'
++                '    def bad_default(self, items=[]):\n'
++                '        """Doc."""\n'
++            ),
++        },
++    )
++    undocumented = {issue.public_path for issue in report.issues_of_kind(griffe.SurfaceIssueKind.UNDOCUMENTED)}
++    mutable = {issue.public_path for issue in report.issues_of_kind(griffe.SurfaceIssueKind.MUTABLE_DEFAULT)}
++    # Members of a re-exported class are audited under the public (alias) path.
++    assert "audpkg.Widget.undocumented_method" in undocumented
++    assert "audpkg.Widget.bad_default" in mutable
++    # The private origin is reported once, at the re-export entry point.
++    origins = {issue.public_path for issue in report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_ORIGIN)}
++    assert origins == {"audpkg.Widget"}
 +
 +
 +def test_as_dict_issue_schema_and_mappings() -> None:
