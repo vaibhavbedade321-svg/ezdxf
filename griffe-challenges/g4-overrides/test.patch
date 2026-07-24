@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_substitution_check.py b/packages/griffelib/tests/test_substitution_check.py
 new file mode 100644
-index 0000000..0d006c5
+index 0000000..f3c288d
 --- /dev/null
 +++ b/packages/griffelib/tests/test_substitution_check.py
-@@ -0,0 +1,575 @@
+@@ -0,0 +1,611 @@
 +"""Tests for the override signature compatibility check."""
 +
 +from __future__ import annotations
@@ -501,7 +501,25 @@ index 0000000..0d006c5
 +    text = issue.explain()
 +    assert "ovrpkg.Child.process" in text
 +    assert "ovrpkg.Base.process" in text
++    assert issue.kind.value in text
 +    assert str(issue) == text
++
++
++def test_classmethod_is_excluded_from_base_conflict() -> None:
++    issues = _issues(
++        """
++        class A:
++            @classmethod
++            def make(cls, x): ...
++
++        class B:
++            @classmethod
++            def make(cls, x, y): ...
++
++        class C(A, B): ...
++        """,
++    )
++    assert griffe.OverrideIssueKind.BASE_CONFLICT not in _kinds(issues)
 +
 +
 +def _run_overrides(tmp_path, code: str, *args: str) -> tuple[int, str, str]:
@@ -579,6 +597,24 @@ index 0000000..0d006c5
 +    assert hasattr(griffe, "check_overrides")
 +    assert hasattr(griffe, "OverrideIssue")
 +    assert hasattr(griffe, "OverrideIssueKind")
++
++
++def test_cli_prints_one_line_per_incompatibility(tmp_path) -> None:
++    exit_code, out, err = _run_overrides(
++        tmp_path,
++        """
++        class Base:
++            def process(self, data, extra): ...
++            def run(self, x, y): ...
++
++        class Child(Base):
++            def process(self, data): ...
++            def run(self, x): ...
++        """,
++    )
++    assert exit_code == 1
++    assert out == ""
++    assert len([line for line in err.splitlines() if line.strip()]) == 2
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..379056a
