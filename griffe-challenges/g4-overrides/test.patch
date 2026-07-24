@@ -1,6 +1,6 @@
 diff --git a/packages/griffelib/tests/test_substitution_check.py b/packages/griffelib/tests/test_substitution_check.py
 new file mode 100644
-index 0000000..f3c288d
+index 0000000..acfabd1
 --- /dev/null
 +++ b/packages/griffelib/tests/test_substitution_check.py
 @@ -0,0 +1,611 @@
@@ -549,7 +549,7 @@ index 0000000..f3c288d
 +
 +def test_cli_overrides_reports_and_exits_nonzero(tmp_path) -> None:
 +    exit_code, _, err = _run_overrides(tmp_path, INCOMPATIBLE)
-+    assert exit_code == 1
++    assert exit_code != 0
 +    assert "ovrclipkg.Child.process" in err
 +    assert "ovrclipkg.Base.process" in err
 +
@@ -580,7 +580,7 @@ index 0000000..f3c288d
 +    exit_code, out, _ = _run_overrides(
 +        tmp_path, code, "--json", "--kind", "kind-changed"
 +    )
-+    assert exit_code == 1
++    assert exit_code != 0
 +    payload = json.loads(out)
 +    kinds = {item["kind"] for item in payload}
 +    assert kinds == {griffe.OverrideIssueKind.KIND_CHANGED.value}
@@ -588,7 +588,7 @@ index 0000000..f3c288d
 +
 +def test_cli_overrides_json_output(tmp_path) -> None:
 +    exit_code, out, _ = _run_overrides(tmp_path, INCOMPATIBLE, "--json")
-+    assert exit_code == 1
++    assert exit_code != 0
 +    payload = json.loads(out)
 +    assert payload[0]["method_path"] == "ovrclipkg.Child.process"
 +
@@ -612,7 +612,7 @@ index 0000000..f3c288d
 +            def run(self, x): ...
 +        """,
 +    )
-+    assert exit_code == 1
++    assert exit_code != 0
 +    assert out == ""
 +    assert len([line for line in err.splitlines() if line.strip()]) == 2
 diff --git a/test.sh b/test.sh

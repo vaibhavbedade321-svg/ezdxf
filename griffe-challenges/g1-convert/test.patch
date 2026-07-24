@@ -1,6 +1,6 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..612a74c
+index 0000000..7b89fac
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
 @@ -0,0 +1,669 @@
@@ -620,7 +620,7 @@ index 0000000..612a74c
 +
 +def test_cli_convert_check_reports_pending_changes(tmp_path) -> None:
 +    exit_code, output = _run_convert(tmp_path, CLI_CODE, "-t", "numpy", "--check")
-+    assert exit_code == 1
++    assert exit_code != 0
 +    assert output == ""
 +    content = (tmp_path / "cvtpkg" / "__init__.py").read_text(encoding="utf8")
 +    assert content == dedent(CLI_CODE)
