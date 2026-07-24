@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_agent_parity.py b/packages/griffelib/tests/test_agent_parity.py
 new file mode 100644
-index 0000000..a987650
+index 0000000..8f4488e
 --- /dev/null
 +++ b/packages/griffelib/tests/test_agent_parity.py
-@@ -0,0 +1,597 @@
+@@ -0,0 +1,613 @@
 +"""Tests for the static/dynamic divergence report."""
 +
 +from __future__ import annotations
@@ -346,6 +346,22 @@ index 0000000..a987650
 +    assert any(path.endswith(".injected") for path in paths)
 +    for divergence in divergences:
 +        if divergence.object_path.endswith(".injected"):
++            assert divergence.kind is griffe.DivergenceKind.MEMBER_MISSING
++            assert divergence.static_value is None
++
++
++def test_user_injected_dunder_is_reported() -> None:
++    divergences = _divergences(
++        """
++        import sys
++
++        setattr(sys.modules[__name__], "__runtime_feature__", 1)
++        """,
++    )
++    paths = {divergence.object_path for divergence in divergences}
++    assert any(path.endswith(".__runtime_feature__") for path in paths)
++    for divergence in divergences:
++        if divergence.object_path.endswith(".__runtime_feature__"):
 +            assert divergence.kind is griffe.DivergenceKind.MEMBER_MISSING
 +            assert divergence.static_value is None
 +
