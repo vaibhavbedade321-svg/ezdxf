@@ -220,10 +220,10 @@ index 17e346a..a632fe9 100644
  
 diff --git a/packages/griffelib/src/griffe/_internal/surface.py b/packages/griffelib/src/griffe/_internal/surface.py
 new file mode 100644
-index 0000000..734413a
+index 0000000..d28fc7e
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/surface.py
-@@ -0,0 +1,464 @@
+@@ -0,0 +1,444 @@
 +# This module computes the public API surface of a package and audits it.
 +# Re-export chains are resolved to their final targets so the audit sees
 +# the objects a user actually reaches through public paths.
@@ -340,26 +340,6 @@ index 0000000..734413a
 +        keep = set(kinds)
 +        kept = [issue for issue in self.issues if issue.kind in keep]
 +        return SurfaceReport(self.package, kept, self.canonical_paths)
-+
-+    def by_module(self) -> dict[str, list[SurfaceIssue]]:
-+        """Group the issues by the top-level module they belong to.
-+
-+        The key is the first path segment under the package, or the package
-+        name for issues reported at the top level. Modules without issues are
-+        omitted and each group keeps the report's overall order.
-+
-+        Returns:
-+            A mapping from module name to its issues.
-+        """
-+        groups: dict[str, list[SurfaceIssue]] = {}
-+        prefix = f"{self.package}."
-+        for issue in self.issues:
-+            path = issue.public_path
-+            rest = path[len(prefix):] if path.startswith(prefix) else path
-+            parts = rest.split(".")
-+            key = parts[0] if len(parts) > 1 else self.package
-+            groups.setdefault(key, []).append(issue)
-+        return groups
 +
 +    @property
 +    def affected_paths(self) -> list[str]:
