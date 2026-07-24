@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
 new file mode 100644
-index 0000000..e19b6ec
+index 0000000..4612db8
 --- /dev/null
 +++ b/packages/griffelib/tests/test_exposure_audit.py
-@@ -0,0 +1,514 @@
+@@ -0,0 +1,559 @@
 +"""Tests for the public API surface audit."""
 +
 +from __future__ import annotations
@@ -387,12 +387,13 @@ index 0000000..e19b6ec
 +
 +
 +def test_cli_api_reports_issues_and_exits_nonzero(tmp_path) -> None:
-+    exit_code, _, err = _run_api(
++    exit_code, out, err = _run_api(
 +        tmp_path,
 +        {"__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n'},
 +    )
-+    assert exit_code == 1
++    assert exit_code != 0
 +    assert "audclipkg.nodoc" in err
++    assert out == ""
 +
 +
 +def test_cli_api_fail_on_gates_exit_code(tmp_path) -> None:
@@ -518,6 +519,50 @@ index 0000000..e19b6ec
 +    )
 +    leaks = report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_LEAK)
 +    assert any(issue.public_path == "audpkg.use" for issue in leaks)
++
++
++def test_undocumented_public_submodule_is_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\nfrom audpkg import sub\n\n__all__ = ["sub"]\n',
++            "sub.py": 'def a():\n    """Doc."""\n',
++        },
++    )
++    undocumented = {issue.public_path for issue in report.issues_of_kind(griffe.SurfaceIssueKind.UNDOCUMENTED)}
++    assert "audpkg.sub" in undocumented
++
++
++def test_as_dict_issue_schema_and_mappings() -> None:
++    report = _audit({"__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n'})
++    payload = json.loads(json.dumps(report.as_dict()))
++    assert set(payload) == {"package", "issues", "counts", "canonical_paths"}
++    assert payload["package"] == "audpkg"
++    for entry in payload["issues"]:
++        assert set(entry) == {"kind", "public_path", "details"}
++    assert payload["counts"] == {"UNDOCUMENTED": 1}
++    assert all(
++        isinstance(key, str) and isinstance(value, str)
++        for key, value in payload["canonical_paths"].items()
++    )
++
++
++def test_filter_metadata_is_consistent_with_filtered_issues() -> None:
++    report = _audit({"__init__.py": '"""Doc."""\n\ndef tool(items=[]):\n    pass\n'})
++    filtered = report.filter(griffe.SurfaceIssueKind.MUTABLE_DEFAULT)
++    assert all(issue.kind is griffe.SurfaceIssueKind.MUTABLE_DEFAULT for issue in filtered.issues)
++    assert filtered.counts == {"MUTABLE_DEFAULT": 1}
++    assert filtered.affected_paths == ["audpkg.tool"]
++
++
++def test_cli_api_multiple_fail_on_gates_on_any_kind(tmp_path) -> None:
++    modules = {"__init__.py": '"""Doc."""\n\ndef nodoc(): ...\n'}
++    exit_code, _, _ = _run_api(tmp_path, modules, "--fail-on", "private-origin")
++    assert exit_code == 0
++    exit_code, _, err = _run_api(
++        tmp_path, modules, "--fail-on", "private-origin", "--fail-on", "undocumented"
++    )
++    assert exit_code != 0
++    assert "audclipkg.nodoc" in err
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..52be181
