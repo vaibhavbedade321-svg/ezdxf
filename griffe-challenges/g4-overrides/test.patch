@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_substitution_check.py b/packages/griffelib/tests/test_substitution_check.py
 new file mode 100644
-index 0000000..acfabd1
+index 0000000..46735ce
 --- /dev/null
 +++ b/packages/griffelib/tests/test_substitution_check.py
-@@ -0,0 +1,611 @@
+@@ -0,0 +1,677 @@
 +"""Tests for the override signature compatibility check."""
 +
 +from __future__ import annotations
@@ -615,6 +615,72 @@ index 0000000..acfabd1
 +    assert exit_code != 0
 +    assert out == ""
 +    assert len([line for line in err.splitlines() if line.strip()]) == 2
++
++
++def test_flavor_and_kind_change_suppress_signature_issues() -> None:
++    flavor = _issues(
++        """
++        class Base:
++            @staticmethod
++            def m(a, b): ...
++
++        class Child(Base):
++            def m(self, a): ...
++        """,
++    )
++    assert _kinds(flavor) == {griffe.OverrideIssueKind.FLAVOR_CHANGED}
++    kind = _issues(
++        """
++        class Base:
++            def m(self, a, b): ...
++
++        class Child(Base):
++            m = 5
++        """,
++    )
++    assert _kinds(kind) == {griffe.OverrideIssueKind.KIND_CHANGED}
++
++
++def test_unresolved_base_is_skipped_without_masking_other_classes() -> None:
++    issues = _issues(
++        """
++        from nonexistent_external_pkg import Missing
++
++        class Weird(Missing):
++            def m(self, a): ...
++
++        class Base:
++            def process(self, data, extra): ...
++
++        class Child(Base):
++            def process(self, data): ...
++        """,
++    )
++    paths = {issue.method_path for issue in issues}
++    assert "ovrpkg.Child.process" in paths
++    assert not any("Weird" in path for path in paths)
++
++
++def test_cli_multiple_kind_filters_are_union(tmp_path) -> None:
++    code = """
++    class Base:
++        def m(self, a, b): ...
++    class Child(Base):
++        def m(self, a): ...
++
++    class Base2:
++        def n(self, a): ...
++    class Child2(Base2):
++        n = 5
++    """
++    _, out, _ = _run_overrides(
++        tmp_path, code, "--kind", "parameter-removed", "--kind", "kind-changed", "--json"
++    )
++    kinds = {entry["kind"] for entry in json.loads(out)}
++    assert kinds == {
++        griffe.OverrideIssueKind.PARAMETER_REMOVED.value,
++        griffe.OverrideIssueKind.KIND_CHANGED.value,
++    }
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..379056a
