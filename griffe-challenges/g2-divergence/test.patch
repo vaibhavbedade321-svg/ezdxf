@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_agent_parity.py b/packages/griffelib/tests/test_agent_parity.py
 new file mode 100644
-index 0000000..3b48c07
+index 0000000..a3f1e36
 --- /dev/null
 +++ b/packages/griffelib/tests/test_agent_parity.py
-@@ -0,0 +1,503 @@
+@@ -0,0 +1,527 @@
 +"""Tests for the static/dynamic divergence report."""
 +
 +from __future__ import annotations
@@ -270,6 +270,29 @@ index 0000000..3b48c07
 +    assert divergences == []
 +
 +
++def test_one_sided_annotation_is_not_a_divergence() -> None:
++    divergences = _divergences(
++        """
++        from dataclasses import dataclass
++
++        @dataclass
++        class Point:
++            x: int = 0
++        """,
++    )
++    assert griffe.DivergenceKind.ANNOTATION not in _kinds(divergences)
++
++
++def test_interpreter_injected_dunders_are_not_divergences() -> None:
++    divergences = _divergences(
++        """
++        class Plain:
++            pass
++        """,
++    )
++    assert [d.object_path for d in divergences if ".__" in d.object_path] == []
++
++
 +def test_runtime_appended_all_is_an_exports_divergence() -> None:
 +    divergences = _divergences(
 +        """
@@ -467,6 +490,7 @@ index 0000000..3b48c07
 +    captured = capsys.readouterr()
 +    assert exit_code == 1
 +    assert "dvclipkg.func" in captured.err
++    assert captured.out == ""
 +
 +
 +def test_cli_runtime_clean_package_exits_zero(capsys: pytest.CaptureFixture) -> None:
