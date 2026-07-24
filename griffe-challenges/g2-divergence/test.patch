@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_agent_parity.py b/packages/griffelib/tests/test_agent_parity.py
 new file mode 100644
-index 0000000..8f4488e
+index 0000000..62f39bb
 --- /dev/null
 +++ b/packages/griffelib/tests/test_agent_parity.py
-@@ -0,0 +1,613 @@
+@@ -0,0 +1,641 @@
 +"""Tests for the static/dynamic divergence report."""
 +
 +from __future__ import annotations
@@ -250,6 +250,34 @@ index 0000000..8f4488e
 +        from dataclasses import dataclass
 +
 +        @dataclass
++        class Point:
++            x: int
++            y: int = 0
++        """,
++    )
++    assert divergences == []
++
++
++def test_order_dataclass_generated_methods_are_not_divergences() -> None:
++    divergences = _divergences(
++        """
++        from dataclasses import dataclass
++
++        @dataclass(order=True)
++        class Point:
++            x: int
++            y: int = 0
++        """,
++    )
++    assert divergences == []
++
++
++def test_frozen_dataclass_generated_methods_are_not_divergences() -> None:
++    divergences = _divergences(
++        """
++        from dataclasses import dataclass
++
++        @dataclass(order=True, frozen=True)
 +        class Point:
 +            x: int
 +            y: int = 0
