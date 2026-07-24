@@ -208,10 +208,10 @@ index 17e346a..a1b66c3 100644
  
 diff --git a/packages/griffelib/src/griffe/_internal/overrides.py b/packages/griffelib/src/griffe/_internal/overrides.py
 new file mode 100644
-index 0000000..939bc86
+index 0000000..7ec1c79
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/overrides.py
-@@ -0,0 +1,349 @@
+@@ -0,0 +1,346 @@
 +# This module checks method overrides for signature compatibility.
 +# A subclass method that cannot be substituted for the method it overrides
 +# breaks callers that hold the parent type.
@@ -296,14 +296,11 @@ index 0000000..939bc86
 +        Returns:
 +            A dictionary.
 +        """
-+        data: dict[str, Any] = {
++        return {
 +            "kind": self.kind,
 +            "method_path": self.method_path,
 +            "base_path": self.base_path,
 +        }
-+        if self.details:
-+            data["details"] = self.details
-+        return data
 +
 +
 +def _has_var_positional(func: Function) -> bool:

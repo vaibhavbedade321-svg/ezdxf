@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_substitution_check.py b/packages/griffelib/tests/test_substitution_check.py
 new file mode 100644
-index 0000000..46735ce
+index 0000000..b37cbe5
 --- /dev/null
 +++ b/packages/griffelib/tests/test_substitution_check.py
-@@ -0,0 +1,677 @@
+@@ -0,0 +1,679 @@
 +"""Tests for the override signature compatibility check."""
 +
 +from __future__ import annotations
@@ -468,8 +468,10 @@ index 0000000..46735ce
 +    )
 +    payload = json.dumps([issue.as_dict() for issue in issues])
 +    decoded = json.loads(payload)
++    assert set(decoded[0]) == {"kind", "method_path", "base_path"}
 +    assert decoded[0]["method_path"] == "ovrpkg.Child.process"
 +    assert decoded[0]["base_path"] == "ovrpkg.Base.process"
++    assert decoded[0]["kind"] == issues[0].kind.value
 +
 +
 +def test_issue_str_mentions_both_paths() -> None:
