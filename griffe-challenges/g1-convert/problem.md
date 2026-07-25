@@ -1,4 +1,4 @@
-Griffe parses Google, Numpydoc and Sphinx docstrings into structured section models, but the pipeline is strictly one-directional: there is no way to turn a parsed docstring back into text. That blocks an often requested workflow, migrating a whole package from one docstring dialect to another.
+Add docstring composition to griffe, so parsed sections can be emitted back to text. The goal is package-wide conversion from one docstring dialect to another.
 
 The top-level `griffe` package exposes `compose`, which takes parsed sections and a target dialect named by a `Parser` member or its string name, along with `compose_google`, `compose_numpy` and `compose_sphinx` handling one dialect each and a `composers` mapping from `Parser` members to composer callables, one entry per concrete dialect. Composing with the `auto` style raises `ValueError`, while composing an empty section sequence yields text rather than raising. Each composer renders annotations in its dialect's native syntax, and numpy composition renders a parameter default as `name : type, default=value`, so both survive reparsing.
 
