@@ -198,10 +198,10 @@ index a559e0f..4d09aaf 100644
      "builtin_extensions",
      "c3linear_merge",
 diff --git a/packages/griffelib/src/griffe/_internal/enumerations.py b/packages/griffelib/src/griffe/_internal/enumerations.py
-index 17e346a..11bf822 100644
+index 17e346a..839703a 100644
 --- a/packages/griffelib/src/griffe/_internal/enumerations.py
 +++ b/packages/griffelib/src/griffe/_internal/enumerations.py
-@@ -150,6 +150,23 @@ class BreakageKind(str, Enum):
+@@ -150,6 +150,25 @@ class BreakageKind(str, Enum):
      """Base class was removed"""
  
  
@@ -218,6 +218,8 @@ index 17e346a..11bf822 100644
 +    """Object is reachable by several public paths"""
 +    INCONSISTENT_ALL = "Public definition is missing from its module's __all__"
 +    """Public definition is missing from its module's __all__"""
++    PRIVATE_LEAK = "Public signature references a private object"
++    """Public signature references a private object"""
 +    MUTABLE_DEFAULT = "Public callable has a mutable default argument"
 +    """Public callable has a mutable default argument"""
 +
@@ -227,10 +229,10 @@ index 17e346a..11bf822 100644
  
 diff --git a/packages/griffelib/src/griffe/_internal/surface.py b/packages/griffelib/src/griffe/_internal/surface.py
 new file mode 100644
-index 0000000..a82814e
+index 0000000..9fdf581
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/surface.py
-@@ -0,0 +1,429 @@
+@@ -0,0 +1,478 @@
 +# This module computes the public API surface of a package and audits it.
 +# Re-export chains are resolved to their final targets so the audit sees
 +# the objects a user actually reaches through public paths.
@@ -240,8 +242,8 @@ index 0000000..a82814e
 +from typing import TYPE_CHECKING, Any
 +
 +from griffe._internal.enumerations import SurfaceIssueKind
-+from griffe._internal.exceptions import AliasResolutionError, CyclicAliasError
-+from griffe._internal.expressions import ExprDict, ExprList, ExprSet
++from griffe._internal.exceptions import AliasResolutionError, CyclicAliasError, NameResolutionError
++from griffe._internal.expressions import Expr, ExprDict, ExprList, ExprName, ExprSet
 +
 +if TYPE_CHECKING:
 +    from collections.abc import Iterator
@@ -537,6 +539,7 @@ index 0000000..a82814e
 +    reachable: dict[str, list[str]] = {}
 +    private_origins: list[tuple[str, str]] = []
 +    private_origin_paths: set[str] = set()
++    signature_refs: list[tuple[str, Expr]] = []
 +
 +    for public_path, obj in _walk_public(package, package.name):
 +        if obj.is_alias:
@@ -569,6 +572,8 @@ index 0000000..a82814e
 +            if parent_path not in private_origin_paths:
 +                private_origins.append((public_path, target.canonical_path))
 +            private_origin_paths.add(public_path)
++
++        signature_refs.extend((public_path, expr) for expr in _signature_expressions(target))
 +
 +        if not target.docstring and (target.is_class or target.is_function or target.is_module):
 +            issues.append(
@@ -649,6 +654,20 @@ index 0000000..a82814e
 +        )
 +
 +
++    seen_leaks: set[tuple[str, str]] = set()
++    for public_path, expr in signature_refs:
++        for canonical in _private_references(expr, package.name):
++            if canonical in reachable or (public_path, canonical) in seen_leaks:
++                continue
++            seen_leaks.add((public_path, canonical))
++            issues.append(
++                SurfaceIssue(
++                    SurfaceIssueKind.PRIVATE_LEAK,
++                    public_path,
++                    details=f"references {canonical}",
++                ),
++            )
++
 +    issues.sort(key=lambda issue: (issue.kind.name, issue.public_path))
 +    return SurfaceReport(package.name, issues, canonical_paths)
 +
@@ -660,3 +679,35 @@ index 0000000..a82814e
 +            continue
 +        if member.is_module:
 +            yield from _iter_modules(member)  # ty:ignore[invalid-argument-type]
++
++def _signature_expressions(obj: Object) -> Iterator[Expr]:
++    """Yield the annotation and base expressions of an object's public signature."""
++    if obj.is_function:
++        for parameter in obj.parameters:  # ty:ignore[unresolved-attribute]
++            if isinstance(parameter.annotation, Expr):
++                yield parameter.annotation
++        if isinstance(obj.returns, Expr):  # ty:ignore[unresolved-attribute]
++            yield obj.returns  # ty:ignore[unresolved-attribute]
++    elif obj.is_attribute:
++        if isinstance(obj.annotation, Expr):  # ty:ignore[unresolved-attribute]
++            yield obj.annotation  # ty:ignore[unresolved-attribute]
++    elif obj.is_class:
++        for base in obj.bases:  # ty:ignore[unresolved-attribute]
++            if isinstance(base, Expr):
++                yield base
++
++def _private_references(expr: Expr, package: str) -> Iterator[str]:
++    """Yield canonical paths of private-module objects referenced by an expression."""
++    nodes: list[str | Expr] = [expr] if isinstance(expr, ExprName) else list(expr.iterate(flat=True))
++    for node in nodes:
++        if not isinstance(node, ExprName):
++            continue
++        try:
++            canonical = node.canonical_path
++        except NameResolutionError:
++            continue
++        if not canonical.startswith(f"{package}."):
++            continue
++        module_path = canonical.rsplit(".", 1)[0]
++        if _module_is_private(module_path, package):
++            yield canonical
