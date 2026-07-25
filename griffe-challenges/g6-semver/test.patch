@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..34b5606
+index 0000000..3f37149
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,879 @@
+@@ -0,0 +1,1008 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -883,6 +883,135 @@ index 0000000..34b5606
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MINOR
 +    assert report.expansions == ["x"]
++
++
++def test_nested_containers_compare_more_than_one_level_deep() -> None:
++    old = (
++        'class Outer:\n    """D."""\n\n    class Inner:\n        """D."""\n\n'
++        '        def a(self):\n            """D."""\n\n__all__ = ["Outer"]\n'
++    )
++    new = (
++        'class Outer:\n    """D."""\n\n    class Inner:\n        """D."""\n\n'
++        '        def a(self):\n            """D."""\n\n'
++        '        def b(self):\n            """D."""\n\n__all__ = ["Outer"]\n'
++    )
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert "Outer.Inner.b" in report.additions
++
++
++def test_added_keyword_only_optional_parameter_is_an_expansion() -> None:
++    report = _bump(
++        'def t(a):\n    """D."""\n\n__all__ = ["t"]\n',
++        'def t(a, *, b=1):\n    """D."""\n\n__all__ = ["t"]\n',
++    )
++    assert report.bump is griffe.Bump.MINOR
++    assert report.expansions == ["t"]
++
++
++def test_base_added_to_class_that_already_had_one_is_an_expansion() -> None:
++    common = 'class A:\n    """D."""\n\nclass B:\n    """D."""\n\n'
++    report = _bump(
++        common + 'class C(A):\n    """D."""\n\n__all__ = ["A", "B", "C"]\n',
++        common + 'class C(A, B):\n    """D."""\n\n__all__ = ["A", "B", "C"]\n',
++    )
++    assert report.bump is griffe.Bump.MINOR
++    assert "C" in report.expansions
++
++
++def test_expansion_and_deprecation_on_one_object_are_separate_changes() -> None:
++    report = _bump(
++        'def t(a):\n    """D."""\n\n__all__ = ["t"]\n',
++        'from warnings import deprecated\n\n@deprecated("x")\n'
++        'def t(a, b=1):\n    """D."""\n\n__all__ = ["t"]\n',
++    )
++    kinds = {change.kind for change in report.changes if change.path == "t"}
++    assert griffe.ChangeKind.EXPANDED in kinds
++    assert griffe.ChangeKind.DEPRECATED in kinds
++    # Ties on path are broken by kind, so the order is deterministic.
++    assert [c.kind.value for c in report.changes if c.path == "t"] == sorted(
++        c.kind.value for c in report.changes if c.path == "t"
++    )
++
++
++def test_signature_that_also_breaks_is_not_reported_as_expanded() -> None:
++    report = _bump(
++        'def t(a, b):\n    """D."""\n\n__all__ = ["t"]\n',
++        'def t(a, c=1):\n    """D."""\n\n__all__ = ["t"]\n',
++    )
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.expansions == []
++
++
++def test_breaking_object_is_not_also_reported_as_expanded() -> None:
++    # Gains a return annotation (a compatible expansion on its own) while also
++    # making `a` positional-only, which is breaking. Only BREAKING is reported.
++    report = _bump(
++        'def t(a):\n    """D."""\n\n__all__ = ["t"]\n',
++        'def t(a, /) -> int:\n    """D."""\n\n__all__ = ["t"]\n',
++    )
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.expansions == []
++    assert [c.kind for c in report.changes if c.path == "t"] == [griffe.ChangeKind.BREAKING]
++
++
++def test_kind_change_is_reported_once_as_breaking_only() -> None:
++    report = _bump(
++        'def t():\n    """D."""\n\n__all__ = ["t"]\n',
++        'class t:\n    """D."""\n\n__all__ = ["t"]\n',
++    )
++    assert report.bump is griffe.Bump.MAJOR
++    assert [c.path for c in report.changes if c.path == "t"] == ["t"]
++    assert report.removals == []
++
++
++def test_renderers_list_breaking_only_paths() -> None:
++    report = _bump(
++        'def t(a, b):\n    """D."""\n\n__all__ = ["t"]\n',
++        'def t(a):\n    """D."""\n\n__all__ = ["t"]\n',
++    )
++    assert report.changes and all(c.kind is griffe.ChangeKind.BREAKING for c in report.changes)
++    assert "t" in report.render_text()
++    assert "t" in report.render_markdown()
++
++
++def test_bump_version_rejects_extra_numeric_component() -> None:
++    report = _bump(
++        'def t():\n    """D."""\n\n__all__ = ["t"]\n',
++        'def t():\n    """D."""\n\n__all__ = ["t"]\n',
++    )
++    for malformed in ("1.2.3.4", "1.2", "v1.2.3"):
++        with pytest.raises(ValueError):
++            report.bump_version(malformed)
++
++
++def test_locally_defined_deprecated_decorator_is_recognized() -> None:
++    report = _bump(
++        'def t(a):\n    """D."""\n\n__all__ = ["t"]\n',
++        'def deprecated(m):\n    """D."""\n    return lambda f: f\n\n'
++        '@deprecated("x")\ndef t(a):\n    """D."""\n\n__all__ = ["t", "deprecated"]\n',
++    )
++    assert "t" in report.deprecations
++
++
++def test_cli_fail_on_still_gates_when_bump_is_requested(tmp_path) -> None:
++    old = 'def t(a):\n    """D."""\n\n__all__ = ["t"]\n'
++    new = 'def t(a):\n    """D."""\n\ndef extra():\n    """D."""\n\n__all__ = ["t", "extra"]\n'
++    exit_code, out = _run_semver(tmp_path, old, new, "--bump", "1.2.3")
++    assert exit_code == 0
++    assert out.strip() == "1.3.0"
++    # The recommendation is MINOR, so --fail-on minor must still gate the exit code.
++    exit_code, out = _run_semver(tmp_path, old, new, "--bump", "1.2.3", "--fail-on", "minor")
++    assert exit_code != 0
++    assert out.strip() == "1.3.0"
++
++
++def test_cli_ignore_still_applies_when_bump_is_requested(tmp_path) -> None:
++    old = 'def t(a):\n    """D."""\n\n__all__ = ["t"]\n'
++    new = 'def t(a):\n    """D."""\n\ndef extra():\n    """D."""\n\n__all__ = ["t", "extra"]\n'
++    exit_code, out = _run_semver(tmp_path, old, new, "--bump", "1.2.3", "--ignore", "extra")
++    assert exit_code == 0
++    assert out.strip() == "1.2.4"
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..dcf581f
