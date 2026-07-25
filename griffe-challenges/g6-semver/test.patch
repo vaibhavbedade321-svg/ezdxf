@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..0a5c851
+index 0000000..34b5606
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,834 @@
+@@ -0,0 +1,879 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -297,7 +297,7 @@ index 0000000..0a5c851
 +
 +def test_bump_between_loads_and_compares(tmp_path) -> None:
 +    old_path = _write_version(
-+        tmp_path, "old", 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
++        tmp_path, "old", 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
 +    )
 +    new_path = _write_version(
 +        tmp_path,
@@ -307,6 +307,20 @@ index 0000000..0a5c851
 +    report = griffe.bump_between("semverpkg", old_path, new_path)
 +    assert report.bump is griffe.Bump.MINOR
 +    assert report.additions == ["helper"]
++
++
++def test_recommend_bump_on_loader_built_models(tmp_path) -> None:
++    old_path = _write_version(tmp_path, "old", 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n')
++    new_path = _write_version(
++        tmp_path,
++        "new",
++        'def tool(a):\n    """Doc."""\n\ndef extra():\n    """Doc."""\n\n__all__ = ["tool", "extra"]\n',
++    )
++    old_model = griffe.load("semverpkg", search_paths=[old_path])
++    new_model = griffe.load("semverpkg", search_paths=[new_path])
++    report = griffe.recommend_bump(old_model, new_model)
++    assert report.bump is griffe.Bump.MINOR
++    assert "extra" in report.additions
 +
 +
 +def test_bump_between_honors_ignore(tmp_path) -> None:
@@ -335,7 +349,7 @@ index 0000000..0a5c851
 +    new_path = _write_version(tmp_path, "new", code)
 +    recorder = _Recorder()
 +    report = griffe.bump_between(
-+        "semverpkg", old_path, new_path, extensions=griffe.load_extensions(recorder)
++        "semverpkg", old_path, new_path, extensions=griffe.load_extensions(recorder),
 +    )
 +    assert report.bump is griffe.Bump.PATCH
 +    assert len(recorder.seen) == 2
@@ -548,7 +562,7 @@ index 0000000..0a5c851
 +    buffer = io.StringIO()
 +    with redirect_stdout(buffer):
 +        exit_code = main(
-+            ["semver", "semverpkg", "--old", old_path, "--new", new_path, *args]
++            ["semver", "semverpkg", "--old", old_path, "--new", new_path, *args],
 +        )
 +    return exit_code, buffer.getvalue()
 +
@@ -650,7 +664,7 @@ index 0000000..0a5c851
 +def test_cli_semver_rejects_unloadable_extension(tmp_path) -> None:
 +    code = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    exit_code, _ = _run_semver(
-+        tmp_path, code, code, "--extensions", "griffe_missing_extension_xyz"
++        tmp_path, code, code, "--extensions", "griffe_missing_extension_xyz",
 +    )
 +    assert exit_code != 0
 +
@@ -741,6 +755,37 @@ index 0000000..0a5c851
 +    assert report.breaking == []
 +
 +
++def test_ignore_does_not_match_name_prefix() -> None:
++    old = 'def keep():\n    """Doc."""\n\n__all__ = ["keep"]\n'
++    new = (
++        'def keep():\n    """Doc."""\n\n'
++        'def Toolbox():\n    """Doc."""\n\n__all__ = ["keep", "Toolbox"]\n'
++    )
++    with (
++        temporary_visited_package("semold", {"__init__.py": old}) as old_module,
++        temporary_visited_package("semnew", {"__init__.py": new}) as new_module,
++    ):
++        report = griffe.recommend_bump(old_module, new_module, ignore=["Tool"])
++    # Ignoring "Tool" must not suppress "Toolbox", which merely starts with it.
++    assert "Toolbox" in report.additions
++    assert report.bump is griffe.Bump.MINOR
++
++
++def test_ignore_does_not_match_later_path_segment() -> None:
++    old = {"__init__.py": '"""Doc."""\n', "sub.py": '"""Doc."""\n\ndef Tool(a):\n    """Doc."""\n'}
++    new = {
++        "__init__.py": '"""Doc."""\n',
++        "sub.py": '"""Doc."""\n\ndef Tool(a, b=1):\n    """Doc."""\n',
++    }
++    with (
++        temporary_visited_package("semold", old) as old_module,
++        temporary_visited_package("semnew", new) as new_module,
++    ):
++        report = griffe.recommend_bump(old_module, new_module, ignore=["Tool"])
++    # ignore matches only the first path segment ("sub"), not "Tool" in "sub.Tool".
++    assert "sub.Tool" in report.expansions
++
++
 +def test_class_gaining_base_is_minor_expansion() -> None:
 +    old = 'class Tool:\n    """Doc."""\n\nclass Mixin:\n    """Doc."""\n\n__all__ = ["Tool", "Mixin"]\n'
 +    new = 'class Tool(Mixin):\n    """Doc."""\n\nclass Mixin:\n    """Doc."""\n\n__all__ = ["Tool", "Mixin"]\n'
@@ -824,7 +869,7 @@ index 0000000..0a5c851
 +    old = 'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    new = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    exit_code, output = _run_semver(
-+        tmp_path, old, new, "--ignore", "tool", "--ignore", "spare", "--json"
++        tmp_path, old, new, "--ignore", "tool", "--ignore", "spare", "--json",
 +    )
 +    assert exit_code == 0
 +    payload = json.loads(output)
