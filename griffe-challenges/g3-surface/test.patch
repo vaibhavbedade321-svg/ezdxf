@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
 new file mode 100644
-index 0000000..1be0f78
+index 0000000..89b4140
 --- /dev/null
 +++ b/packages/griffelib/tests/test_exposure_audit.py
-@@ -0,0 +1,533 @@
+@@ -0,0 +1,547 @@
 +"""Tests for the public API surface audit."""
 +
 +from __future__ import annotations
@@ -215,6 +215,20 @@ index 0000000..1be0f78
 +        },
 +    )
 +    assert report.issues == []
++
++
++def test_private_module_dangling_export_is_not_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\n',
++            "_hidden.py": '"""Doc."""\n\n__all__ = ["ghost"]\n',
++            "shown.py": '"""Doc."""\n\n__all__ = ["ghost"]\n',
++        },
++    )
++    dangling = {issue.public_path for issue in report.issues_of_kind(griffe.SurfaceIssueKind.DANGLING_EXPORT)}
++    # A private module hides everything under it, a broken __all__ included.
++    assert "audpkg._hidden.ghost" not in dangling
++    assert "audpkg.shown.ghost" in dangling
 +
 +
 +def test_public_definition_missing_from_all_is_reported() -> None:

@@ -1,8 +1,14 @@
 diff --git a/packages/griffecli/src/griffecli/__init__.py b/packages/griffecli/src/griffecli/__init__.py
-index b7c23fc..a9642ad 100644
+index b7c23fc..cbe61be 100644
 --- a/packages/griffecli/src/griffecli/__init__.py
 +++ b/packages/griffecli/src/griffecli/__init__.py
-@@ -16,10 +16,11 @@ This package provides command-line tools for interacting with griffe.
+@@ -11,15 +11,17 @@ This package provides command-line tools for interacting with griffe.
+ - [`griffecli.main`][]: Run the main program.
+ - [`griffecli.check`][]: Check for API breaking changes in two versions of the same package.
+ - [`griffecli.dump`][]: Load packages data and dump it as JSON.
++- [`griffecli.api`][]: Audit the public API surface of a package.
+ - [`griffecli.get_parser`][]: Get the argument parser for the CLI.
+ """
  
  from __future__ import annotations
  
@@ -221,10 +227,10 @@ index 17e346a..11bf822 100644
  
 diff --git a/packages/griffelib/src/griffe/_internal/surface.py b/packages/griffelib/src/griffe/_internal/surface.py
 new file mode 100644
-index 0000000..93dd980
+index 0000000..a82814e
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/surface.py
-@@ -0,0 +1,427 @@
+@@ -0,0 +1,429 @@
 +# This module computes the public API surface of a package and audits it.
 +# Re-export chains are resolved to their final targets so the audit sees
 +# the objects a user actually reaches through public paths.
@@ -516,9 +522,8 @@ index 0000000..93dd980
 +    The audit resolves re-export chains to their final targets and reports:
 +    exported names defined in private modules, `__all__` entries that
 +    resolve to nothing, public objects without a docstring, objects
-+    reachable through several public paths, alias cycles, public
-+    signatures referencing private objects, and public definitions
-+    missing from their module's `__all__`. When an
++    reachable through several public paths, public definitions missing
++    from their module's `__all__`, and mutable default arguments. When an
 +    object is reachable through several public paths, the canonical path
 +    is the shortest one, with ties broken alphabetically.
 +
@@ -589,6 +594,10 @@ index 0000000..93dd980
 +        exports = module.exports
 +        if exports is None:
 +            continue
++        # Everything under a private module is hidden, including a broken
++        # `__all__`, so the whole module is skipped before anything is emitted.
++        if _module_is_private(module_path, package.name):
++            continue
 +        export_names = {str(export) for export in exports}
 +        issues.extend(
 +            SurfaceIssue(
@@ -599,8 +608,6 @@ index 0000000..93dd980
 +            for name in export_names
 +            if name not in module.all_members
 +        )
-+        if _module_is_private(module_path, package.name):
-+            continue
 +        for name, member in module.members.items():
 +            if name.startswith("_"):
 +                continue
@@ -619,6 +626,7 @@ index 0000000..93dd980
 +
 +    canonical_paths: dict[str, str] = {}
 +    for canonical, paths in reachable.items():
++        # Fewest path segments wins; ties are broken alphabetically.
 +        chosen = min(paths, key=lambda path: (path.count("."), path))
 +        canonical_paths[canonical] = chosen
 +        if len(paths) > 1:
