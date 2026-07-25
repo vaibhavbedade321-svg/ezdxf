@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..2aa7555
+index 0000000..e3e67d9
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,1009 @@
+@@ -0,0 +1,1040 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
@@ -1013,6 +1013,37 @@ index 0000000..2aa7555
 +    assert '"""' in result
 +    assert "'''" not in result
 +    assert re.search(r"^    Returns\n    -+$", result, flags=re.MULTILINE)
++
++
++def test_multiple_example_blocks_survive_google_round_trip() -> None:
++    source = dedent(
++        """
++        Summary.
++
++        Examples:
++            First text block.
++
++            >>> print(1)
++            1
++
++            Second text block.
++
++            >>> print(2)
++            2
++        """,
++    )
++    parsed = Docstring(source, parser=Parser.google).parsed
++    examples = next(section for section in parsed if section.kind.value == "examples")
++    assert len(examples.value) == 4
++
++    composed = griffe.compose(parsed, "google")
++    recomposed = Docstring(composed, parser=Parser.google).parsed
++    again = next(section for section in recomposed if section.kind.value == "examples")
++    # Sub-blocks stay separate; without blank lines the trailing text block is
++    # swallowed by the preceding console block.
++    assert len(again.value) == len(examples.value)
++    assert _model(parsed) == _model(recomposed)
++    assert composed == griffe.compose(recomposed, "google")
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..106e395

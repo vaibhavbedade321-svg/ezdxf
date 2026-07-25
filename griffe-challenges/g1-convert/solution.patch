@@ -333,10 +333,10 @@ index 0000000..b3aed67
 +    return element.description.strip("\n")
 diff --git a/packages/griffelib/src/griffe/_internal/docstrings/composers/google.py b/packages/griffelib/src/griffe/_internal/docstrings/composers/google.py
 new file mode 100644
-index 0000000..e064e10
+index 0000000..24fe6fb
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/docstrings/composers/google.py
-@@ -0,0 +1,143 @@
+@@ -0,0 +1,147 @@
 +# This module defines the composer producing Google-style docstring text.
 +
 +from __future__ import annotations
@@ -462,7 +462,11 @@ index 0000000..e064e10
 +            blocks.append("\n".join(lines))
 +        elif kind is DocstringSectionKind.examples:
 +            lines = [f"{section.title or _section_titles[kind]}:"]
-+            for _, sub_value in section.value:
++            for index, (_, sub_value) in enumerate(section.value):
++                # Blank-separate the sub-blocks, otherwise a text block that
++                # follows a console block is reparsed as part of that block.
++                if index:
++                    lines.append("")
 +                lines.extend(indent_block(sub_value, _INDENT))
 +            blocks.append("\n".join(lines))
 +        elif kind is DocstringSectionKind.deprecated:
