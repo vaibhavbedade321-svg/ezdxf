@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..3f37149
+index 0000000..8666d92
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1008 @@
+@@ -0,0 +1,1022 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1012,6 +1012,20 @@ index 0000000..3f37149
 +    exit_code, out = _run_semver(tmp_path, old, new, "--bump", "1.2.3", "--ignore", "extra")
 +    assert exit_code == 0
 +    assert out.strip() == "1.2.4"
++
++
++def test_changelog_groups_removals_and_deprecations_too() -> None:
++    old = 'def keep(a):\n    """D."""\n\ndef gone():\n    """D."""\n\n__all__ = ["keep", "gone"]\n'
++    new = (
++        'from warnings import deprecated\n\n@deprecated("x")\ndef keep(a):\n    """D."""\n\n'
++        'def gone():\n    """D."""\n\n__all__ = ["keep"]\n'
++    )
++    report = _bump(old, new)
++    grouped = report.changelog()
++    # Every change kind is grouped by first path segment, not just additions.
++    assert {change.kind for change in grouped["gone"]} == {griffe.ChangeKind.REMOVED}
++    assert {change.kind for change in grouped["keep"]} == {griffe.ChangeKind.DEPRECATED}
++    assert sorted(grouped) == sorted({change.path.split(".")[0] for change in report.changes})
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..dcf581f
