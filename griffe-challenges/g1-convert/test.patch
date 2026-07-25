@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..ef23fcf
+index 0000000..e83bf76
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,1043 @@
+@@ -0,0 +1,1046 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
@@ -130,7 +130,10 @@ index 0000000..ef23fcf
 +
 +
 +def test_composers_registry_covers_concrete_styles() -> None:
-+    assert set(griffe.composers) == {Parser.google, Parser.numpy, Parser.sphinx}
++    # One entry per concrete dialect, derived from Parser so that adding a
++    # dialect later does not make this assertion wrong.
++    concrete = {parser for parser in Parser if parser is not Parser.auto}
++    assert set(griffe.composers) == concrete
 +    sections = _sections(GOOGLE_FULL, "google")
 +    for style, composer in griffe.composers.items():
 +        inferred, _ = infer_docstring_style(Docstring(composer(sections)))
