@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..b5d6817
+index 0000000..27dbf2e
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,848 @@
+@@ -0,0 +1,965 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
@@ -852,6 +852,123 @@ index 0000000..b5d6817
 +        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
 +    compile(result, "<rewritten>", "exec")
 +    assert result == code
++
++
++def test_examples_section_survives_google_round_trip() -> None:
++    source = dedent(
++        """
++        Summary.
++
++        Examples:
++            Text before.
++
++            >>> print(1)
++            1
++
++        Parameters:
++            a (int): The a.
++        """,
++    )
++    parsed = Docstring(source, parser=Parser.google).parsed
++    kinds = [section.kind.value for section in parsed]
++    assert "examples" in kinds
++    composed = griffe.compose(parsed, "google")
++    assert "print(1)" in composed
++    recomposed = Docstring(composed, parser=Parser.google).parsed
++    assert [section.kind.value for section in recomposed] == kinds
++
++
++def test_unsupported_receives_content_survives_sphinx_composition() -> None:
++    source = dedent(
++        """
++        Summary.
++
++        Receives:
++            bytes: Items consumed here.
++        """,
++    )
++    parsed = Docstring(source, parser=Parser.google).parsed
++    composed = griffe.compose(parsed, "sphinx")
++    # Sphinx has no native Receives field, so the content is kept verbatim
++    # rather than dropped or half-erased.
++    assert "bytes" in composed
++    assert "Items consumed here." in composed
++
++
++def test_explicit_title_is_used_on_the_returns_heading() -> None:
++    from griffe import DocstringReturn, DocstringSectionReturns
++
++    section = DocstringSectionReturns(
++        [DocstringReturn(annotation="int", description="The result.", name="")],
++        title="Gives Back",
++    )
++    for dialect in ("google", "numpy"):
++        composed = griffe.compose([section], dialect)
++        assert "Gives Back" in composed, dialect
++        assert not composed.startswith("Returns"), dialect
++
++
++def test_rewrite_source_treats_uppercase_raw_prefix_like_lowercase() -> None:
++    triple = '"' * 3
++    # Uppercase R is a valid raw prefix; an odd trailing backslash makes the
++    # converted text unrepresentable, so the literal must be left alone.
++    code = (
++        f"def f(a):\n    R{triple}Doc.\n\n    Args:\n"
++        f"        a (int): trail {chr(92)}\n    {triple}\n"
++    )
++    compile(code, "<source>", "exec")
++    with temporary_visited_module(code, docstring_parser=Parser.google) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    compile(result, "<rewritten>", "exec")
++    assert result == code
++
++
++MULTI_MODULES = {
++    "__init__.py": '"""Top.\n\nParameters:\n    cfg (str): C.\n"""\n',
++    "core.py": '"""Core.\n\nParameters:\n    a (int): A.\n"""\n',
++    "sub/__init__.py": '"""Sub.\n\nParameters:\n    b (int): B.\n"""\n',
++}
++
++
++def _write_multi(tmp_path):
++    package = tmp_path / "multicvt"
++    (package / "sub").mkdir(parents=True)
++    for name, text in MULTI_MODULES.items():
++        (package / name).write_text(text, encoding="utf8")
++    return package
++
++
++def _run_multi(tmp_path, *args: str) -> tuple[int, str, str]:
++    import io
++    from contextlib import redirect_stderr, redirect_stdout
++
++    from griffecli import main
++
++    out, err = io.StringIO(), io.StringIO()
++    with redirect_stdout(out), redirect_stderr(err):
++        exit_code = main(["convert", "multicvt", "-s", str(tmp_path), *args])
++    return exit_code, out.getvalue(), err.getvalue()
++
++
++def test_cli_convert_diff_covers_every_changed_module(tmp_path) -> None:
++    package = _write_multi(tmp_path)
++    exit_code, out, _ = _run_multi(tmp_path, "-t", "numpy", "--diff")
++    assert exit_code == 0
++    # One diff per changed module, not just the first one found.
++    assert len([line for line in out.splitlines() if line.startswith("---")]) == len(MULTI_MODULES)
++    # --diff never writes.
++    for name, text in MULTI_MODULES.items():
++        assert (package / name).read_text(encoding="utf8") == text
++
++
++def test_cli_convert_check_is_silent_on_both_streams(tmp_path) -> None:
++    package = _write_multi(tmp_path)
++    exit_code, out, err = _run_multi(tmp_path, "-t", "numpy", "--check")
++    assert exit_code != 0
++    assert out == ""
++    assert err == ""
++    for name, text in MULTI_MODULES.items():
++        assert (package / name).read_text(encoding="utf8") == text
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..106e395
