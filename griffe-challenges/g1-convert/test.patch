@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..27dbf2e
+index 0000000..7be47b2
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,965 @@
+@@ -0,0 +1,993 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
@@ -561,11 +561,15 @@ index 0000000..27dbf2e
 +
 +
 +def test_google_alias_titles_are_preserved_when_model_carries_them() -> None:
-+    from griffe import DocstringSectionParameters
++    from griffe import DocstringParameter, DocstringSectionParameters
 +
-+    section = DocstringSectionParameters([], title="Args")
++    section = DocstringSectionParameters(
++        [DocstringParameter(name="x", annotation="int", description="The X.")],
++        title="Args",
++    )
 +    composed = griffe.compose([section], "google")
 +    assert composed.startswith("Args:")
++    assert "x (int): The X." in composed
 +
 +
 +def test_rewrite_source_keeps_raw_docstring_with_embedded_delimiters_valid() -> None:
@@ -969,6 +973,30 @@ index 0000000..27dbf2e
 +    assert err == ""
 +    for name, text in MULTI_MODULES.items():
 +        assert (package / name).read_text(encoding="utf8") == text
++
++
++def test_compose_rejects_auto_style_given_as_a_string() -> None:
++    with pytest.raises(ValueError):
++        griffe.compose([], "auto")
++
++
++def test_rewrite_source_converts_class_docstring_sections() -> None:
++    code = dedent(
++        '''
++        class Thing:
++            """Class summary.
++
++            Attributes:
++                attr (bool): The attribute.
++            """
++        ''',
++    ).lstrip()
++    with temporary_visited_module(code, docstring_parser=Parser.google) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    compile(result, "<rewritten>", "exec")
++    # The class docstring itself is rewritten, not merely left intact.
++    assert re.search(r"^    Attributes\n    -+$", result, flags=re.MULTILINE)
++    assert "Attributes:" not in result
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..106e395
