@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..8666d92
+index 0000000..5dc2bd8
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1022 @@
+@@ -0,0 +1,1037 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1026,6 +1026,21 @@ index 0000000..8666d92
 +    assert {change.kind for change in grouped["gone"]} == {griffe.ChangeKind.REMOVED}
 +    assert {change.kind for change in grouped["keep"]} == {griffe.ChangeKind.DEPRECATED}
 +    assert sorted(grouped) == sorted({change.path.split(".")[0] for change in report.changes})
++
++
++def test_cli_ignore_feeds_the_gate_not_just_the_printed_bump(tmp_path) -> None:
++    old = 'def t(a):\n    """D."""\n\n__all__ = ["t"]\n'
++    new = 'def t(a):\n    """D."""\n\ndef extra():\n    """D."""\n\n__all__ = ["t", "extra"]\n'
++    # Without --ignore the recommendation is MINOR, so --fail-on minor gates.
++    exit_code, _ = _run_semver(tmp_path, old, new, "--bump", "1.2.3", "--fail-on", "minor")
++    assert exit_code != 0
++    # Ignoring the only addition drops the recommendation to PATCH, so the same
++    # gate no longer trips: --ignore shapes the comparison behind both outputs.
++    exit_code, out = _run_semver(
++        tmp_path, old, new, "--bump", "1.2.3", "--ignore", "extra", "--fail-on", "minor",
++    )
++    assert exit_code == 0
++    assert out.strip() == "1.2.4"
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..dcf581f
