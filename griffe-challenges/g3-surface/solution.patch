@@ -229,10 +229,10 @@ index 17e346a..839703a 100644
  
 diff --git a/packages/griffelib/src/griffe/_internal/surface.py b/packages/griffelib/src/griffe/_internal/surface.py
 new file mode 100644
-index 0000000..9fdf581
+index 0000000..61eae74
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/surface.py
-@@ -0,0 +1,478 @@
+@@ -0,0 +1,482 @@
 +# This module computes the public API surface of a package and audits it.
 +# Re-export chains are resolved to their final targets so the audit sees
 +# the objects a user actually reaches through public paths.
@@ -386,7 +386,8 @@ index 0000000..9fdf581
 +        if not self.issues:
 +            return f"{self.package}: public API surface is clean"
 +        lines = []
-+        for kind in SurfaceIssueKind:
++        # Same order as `issues`, which is sorted by category name then path.
++        for kind in sorted(SurfaceIssueKind, key=lambda k: k.name):
 +            group = self.issues_of_kind(kind)
 +            if not group:
 +                continue
@@ -494,8 +495,11 @@ index 0000000..9fdf581
 +    """
 +    if isinstance(default, (ExprList, ExprDict, ExprSet)):
 +        return True
-+    if isinstance(default, str):
-+        text = default.strip()
++    if default is not None:
++        # Static call syntax such as `list()` arrives as an expression node,
++        # and inspection hands over a repr string; both reduce to source text,
++        # so one textual rule covers them.
++        text = (default if isinstance(default, str) else str(default)).strip()
 +        if text in _MUTABLE_DEFAULT_CALLS:
 +            return True
 +        # `[...]` list, `{...}` dict or set literal (empty `{}` is a dict).

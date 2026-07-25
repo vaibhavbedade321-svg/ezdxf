@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
 new file mode 100644
-index 0000000..a131e85
+index 0000000..d270c83
 --- /dev/null
 +++ b/packages/griffelib/tests/test_exposure_audit.py
-@@ -0,0 +1,667 @@
+@@ -0,0 +1,700 @@
 +"""Tests for the public API surface audit."""
 +
 +from __future__ import annotations
@@ -671,6 +671,39 @@ index 0000000..a131e85
 +    visited_names = {i.public_path.split(".", 1)[1] for i in visited.issues_of_kind(griffe.SurfaceIssueKind.MUTABLE_DEFAULT)}
 +    # "statically parsed and dynamically inspected packages alike"
 +    assert inspected_names == visited_names == {"f"}
++
++
++def test_constructor_call_defaults_are_reported() -> None:
++    report = _audit(
++        {
++            "__init__.py": (
++                '"""Doc."""\n\ndef f(x=list(), y=dict(), z=set()):\n    """Doc."""\n\n'
++                'def ok(a=(), b=5, c="s"):\n    """Doc."""\n'
++            ),
++        },
++    )
++    paths = {i.public_path for i in report.issues_of_kind(griffe.SurfaceIssueKind.MUTABLE_DEFAULT)}
++    # `list()` parses to a call expression, not a list literal, but builds the
++    # same shared mutable default. Tuples and scalars stay clean.
++    assert paths == {"audpkg.f"}
++
++
++def test_render_text_groups_in_the_same_order_as_issues() -> None:
++    report = _audit(
++        {
++            "__init__.py": (
++                '"""Doc."""\n\ndef nodoc(): ...\n\n__all__ = ["nodoc", "ghost"]\n'
++            ),
++        },
++    )
++    text = report.render_text()
++    positions = []
++    for issue in report.issues:
++        heading = issue.kind.value
++        if heading not in [h for h, _ in positions]:
++            positions.append((heading, text.index(heading)))
++    # Headings appear in the same order the sorted issue list does.
++    assert [offset for _, offset in positions] == sorted(offset for _, offset in positions)
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..52be181
