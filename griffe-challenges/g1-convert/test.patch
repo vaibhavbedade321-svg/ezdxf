@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..a0fe7d0
+index 0000000..b5d6817
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,738 @@
+@@ -0,0 +1,848 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
@@ -252,7 +252,7 @@ index 0000000..a0fe7d0
 +    reparsed = Docstring(composed).parse("sphinx", warnings=False)
 +    recomposed = griffe.compose(reparsed, "sphinx")
 +    assert recomposed == griffe.compose(
-+        Docstring(recomposed).parse("sphinx", warnings=False), "sphinx"
++        Docstring(recomposed).parse("sphinx", warnings=False), "sphinx",
 +    )
 +
 +
@@ -317,7 +317,7 @@ index 0000000..a0fe7d0
 +        reparsed = Docstring(converted).parse(style, warnings=False)
 +        recomposed = griffe.compose(reparsed, style)
 +        assert recomposed == griffe.compose(
-+            Docstring(recomposed).parse(style, warnings=False), style
++            Docstring(recomposed).parse(style, warnings=False), style,
 +        )
 +
 +
@@ -512,7 +512,7 @@ index 0000000..a0fe7d0
 +        '''
 +        def f():
 +            'Single line.'
-+        '''
++        ''',
 +    )
 +    with temporary_visited_module(code) as module:
 +        result = griffe.rewrite_source(code, module, "google", source_style="google")
@@ -524,7 +524,7 @@ index 0000000..a0fe7d0
 +        """
 +        def f():
 +            ':returns: The result.'
-+        """
++        """,
 +    )
 +    with temporary_visited_module(code) as module:
 +        result = griffe.rewrite_source(code, module, "numpy", source_style="sphinx")
@@ -539,7 +539,7 @@ index 0000000..a0fe7d0
 +        def f():
 +            \"\"\"Doc.\"\"\"  # keep me
 +            return 1
-+        """
++        """,
 +    )
 +    with temporary_visited_module(code) as module:
 +        result = griffe.rewrite_source(code, module, "google", source_style="google")
@@ -552,7 +552,7 @@ index 0000000..a0fe7d0
 +        """
 +        def f():
 +            \'\'\'Contains three double quotes: \"\"\" inside.\'\'\'
-+        """
++        """,
 +    )
 +    with temporary_visited_module(code) as module:
 +        result = griffe.rewrite_source(code, module, "google", source_style="google")
@@ -578,7 +578,7 @@ index 0000000..a0fe7d0
 +    Args:
 +        x (int): has TTT inside and ends with "quote"
 +    QQQ
-+'''
++''',
 +        )
 +        .replace("QQQ", '"' * 3)
 +        .replace("TTT", "'" * 3)
@@ -599,7 +599,7 @@ index 0000000..a0fe7d0
 +    Args:
 +        x (int): trailing slash BSL
 +    QQQ
-+'''
++''',
 +        )
 +        .replace("QQQ", '"' * 3)
 +        .replace("BSL", chr(92))
@@ -622,7 +622,7 @@ index 0000000..a0fe7d0
 +    Args:
 +        x (int): trail BSL
 +    QQQ
-+'''
++''',
 +        )
 +        .replace("QQQ", '"' * 3)
 +        .replace("BSL", chr(92))
@@ -707,7 +707,7 @@ index 0000000..a0fe7d0
 +\"\"\"
 +"""
 +    exit_code, _ = _run_convert(
-+        tmp_path, sphinx_code, "-t", "numpy", "-d", "sphinx", "--in-place"
++        tmp_path, sphinx_code, "-t", "numpy", "-d", "sphinx", "--in-place",
 +    )
 +    assert exit_code == 0
 +    content = (tmp_path / "cvtpkg" / "__init__.py").read_text(encoding="utf8")
@@ -742,6 +742,116 @@ index 0000000..a0fe7d0
 +        content = (package / name).read_text(encoding="utf8")
 +        assert re.search(r"^Parameters\n-+$", content, flags=re.MULTILINE), name
 +        assert "Parameters:" not in content, name
++
++
++@pytest.mark.parametrize("dialect", ["google", "numpy", "sphinx"])
++def test_empty_section_sequence_composes_without_raising(dialect: str) -> None:
++    composed = griffe.compose([], dialect)
++    assert isinstance(composed, str)
++    # Stable: composing nothing twice gives the same text.
++    assert griffe.compose([], dialect) == composed
++
++
++def test_repeated_section_kinds_keep_their_order_and_count() -> None:
++    source = dedent(
++        '''
++        Summary.
++
++        Note:
++            First note.
++
++        Parameters:
++            a (int): The a.
++
++        Note:
++            Second note.
++        ''',
++    )
++    parsed = Docstring(source, parser=Parser.google).parsed
++    kinds = [section.kind.value for section in parsed]
++    # Two admonitions with a parameters section between them, not collapsed.
++    assert kinds.count("admonition") == 2
++    recomposed = Docstring(griffe.compose(parsed, "google"), parser=Parser.google).parsed
++    assert [section.kind.value for section in recomposed] == kinds
++
++
++def test_type_parameters_section_survives_google_round_trip() -> None:
++    source = dedent(
++        '''
++        Summary.
++
++        Type Parameters:
++            T: A type variable.
++
++        Parameters:
++            a (int): The a.
++        ''',
++    )
++    parsed = Docstring(source, parser=Parser.google).parsed
++    kinds = [section.kind.value for section in parsed]
++    assert "type parameters" in kinds
++    recomposed = Docstring(griffe.compose(parsed, "google"), parser=Parser.google).parsed
++    assert [section.kind.value for section in recomposed] == kinds
++
++
++def test_omitted_source_style_is_inferred_per_docstring() -> None:
++    # A numpy module docstring and a google function docstring in one module:
++    # inferring once for the whole module would mistranslate one of them.
++    code = dedent(
++        '''
++        """Mod.
++
++        Parameters
++        ----------
++        cfg : str
++            Config.
++        """
++
++
++        def g(a):
++            """Google.
++
++            Args:
++                a (int): The a.
++            """
++        ''',
++    ).lstrip()
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "sphinx")
++    compile(result, "<rewritten>", "exec")
++    # Both docstrings must have become Sphinx fields.
++    assert ":param cfg:" in result
++    assert ":param a:" in result
++    assert "Parameters\n" not in result
++    assert "Args:" not in result
++
++
++def test_bytes_after_closing_delimiter_are_not_normalized() -> None:
++    code = (
++        'def f(a):\n    """Doc.\n\n    Args:\n        a (int): A.\n'
++        '    """   # trailing spaces then a comment\n    return a\n'
++    )
++    with temporary_visited_module(code, docstring_parser=Parser.google) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    compile(result, "<rewritten>", "exec")
++    # The run of spaces and the comment after the closing quotes survive verbatim.
++    assert '"""   # trailing spaces then a comment\n    return a\n' in result
++
++
++def test_raw_docstring_conflicting_with_both_delimiters_is_left_unchanged() -> None:
++    triple_double = '"' * 3
++    triple_single = "'" * 3
++    # Raw literal whose text contains \"\"\" and ends with an apostrophe, so neither
++    # triple-quote delimiter can hold it and a raw string cannot escape either.
++    code = (
++        f"def f(a):\n    r{triple_single}Doc with {triple_double} inside.\n\n"
++        f"    Args:\n        a (int): ends with apostrophe'\n    {triple_single}\n"
++    )
++    compile(code, "<source>", "exec")
++    with temporary_visited_module(code, docstring_parser=Parser.google) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    compile(result, "<rewritten>", "exec")
++    assert result == code
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..106e395
