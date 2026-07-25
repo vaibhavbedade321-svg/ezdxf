@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..7be47b2
+index 0000000..62cfb10
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,993 @@
+@@ -0,0 +1,1021 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
@@ -653,7 +653,7 @@ index 0000000..7be47b2
 +    from griffecli import main
 +
 +    package = tmp_path / "cvtpkg"
-+    package.mkdir()
++    package.mkdir(exist_ok=True)
 +    (package / "__init__.py").write_text(dedent(code), encoding="utf8")
 +    buffer = io.StringIO()
 +    with redirect_stdout(buffer):
@@ -997,6 +997,34 @@ index 0000000..7be47b2
 +    # The class docstring itself is rewritten, not merely left intact.
 +    assert re.search(r"^    Attributes\n    -+$", result, flags=re.MULTILINE)
 +    assert "Attributes:" not in result
++
++
++def test_cli_convert_rejects_auto_target_style(tmp_path) -> None:
++    # A concrete target style runs normally, which anchors the command's
++    # existence so the rejection below cannot pass for the wrong reason.
++    exit_code, _ = _run_convert(tmp_path, CLI_CODE, "-t", "numpy", "--check")
++    assert exit_code != 0
++    # `auto` is not a composable target, so it must be rejected outright
++    # rather than silently picking a dialect.
++    with pytest.raises(SystemExit) as excinfo:
++        _run_convert(tmp_path, CLI_CODE, "-t", "auto")
++    assert excinfo.value.code != 0
++
++
++def test_rewrite_source_widens_double_quotes_to_triple_double() -> None:
++    code = dedent(
++        '''
++        def f():
++            ":returns: The result."
++        ''',
++    )
++    with temporary_visited_module(code, docstring_parser=Parser.sphinx) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="sphinx")
++    compile(result, "<rewritten>", "exec")
++    # Widening keeps the original quote character, mirroring the single-quote case.
++    assert '"""' in result
++    assert "'''" not in result
++    assert re.search(r"^    Returns\n    -+$", result, flags=re.MULTILINE)
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..106e395
