@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_agent_parity.py b/packages/griffelib/tests/test_agent_parity.py
 new file mode 100644
-index 0000000..882a676
+index 0000000..af6e55e
 --- /dev/null
 +++ b/packages/griffelib/tests/test_agent_parity.py
-@@ -0,0 +1,641 @@
+@@ -0,0 +1,678 @@
 +"""Tests for the static/dynamic divergence report."""
 +
 +from __future__ import annotations
@@ -645,6 +645,43 @@ index 0000000..882a676
 +    divergence = divergences[0]
 +    assert divergence.as_dict()["kind"] == divergence.kind.value
 +    assert divergence.kind.value in divergence.explain()
++
++
++def test_changed_return_annotation_is_reported() -> None:
++    divergences = _divergences(
++        """
++        def deco(f):
++            def inner(a) -> str: ...
++            return inner
++
++        @deco
++        def func(a) -> int: ...
++        """,
++    )
++    # ANNOTATION covers the return annotation, not only parameters.
++    assert griffe.DivergenceKind.ANNOTATION in _kinds(divergences)
++    annotations = [d for d in divergences if d.kind is griffe.DivergenceKind.ANNOTATION]
++    assert any(d.object_path.endswith("func") for d in annotations)
++
++
++def test_load_both_forwards_options_other_than_search_paths() -> None:
++    class _Recorder(griffe.Extension):
++        def __init__(self) -> None:
++            self.seen: list[str] = []
++
++        def on_package(self, *, pkg, **kwargs) -> None:  # noqa: ANN001, ANN003, ARG002
++            self.seen.append(str(pkg.name))
++
++    recorder = _Recorder()
++    with _fresh_package('"""Doc."""\n\ndef tool(): ...\n') as (name, tmp_package):
++        static, dynamic = griffe.load_both(
++            name,
++            search_paths=[tmp_package.tmpdir],
++            extensions=griffe.load_extensions(recorder),
++        )
++    # The option reaches both independent loads, not just one.
++    assert len(recorder.seen) == 2
++    assert static is not dynamic
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..cdca388
