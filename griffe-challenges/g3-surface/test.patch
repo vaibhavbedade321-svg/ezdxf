@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
 new file mode 100644
-index 0000000..caf4929
+index 0000000..e523360
 --- /dev/null
 +++ b/packages/griffelib/tests/test_exposure_audit.py
-@@ -0,0 +1,533 @@
+@@ -0,0 +1,520 @@
 +"""Tests for the public API surface audit."""
 +
 +from __future__ import annotations
@@ -228,19 +228,6 @@ index 0000000..caf4929
 +    )
 +    inconsistent = report.issues_of_kind(griffe.SurfaceIssueKind.INCONSISTENT_ALL)
 +    assert {issue.public_path for issue in inconsistent} == {"audpkg.helper"}
-+
-+
-+def test_unexported_import_is_reported_as_inconsistent() -> None:
-+    report = _audit(
-+        {
-+            "__init__.py": (
-+                '"""Doc."""\nfrom audpkg.core import tool\n\n__all__ = []\n'
-+            ),
-+            "core.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
-+        },
-+    )
-+    inconsistent = report.issues_of_kind(griffe.SurfaceIssueKind.INCONSISTENT_ALL)
-+    assert any(issue.public_path == "audpkg.tool" for issue in inconsistent)
 +
 +
 +def test_module_without_all_has_no_inconsistency_issue() -> None:

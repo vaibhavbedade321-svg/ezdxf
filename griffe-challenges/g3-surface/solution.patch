@@ -221,10 +221,10 @@ index 17e346a..11bf822 100644
  
 diff --git a/packages/griffelib/src/griffe/_internal/surface.py b/packages/griffelib/src/griffe/_internal/surface.py
 new file mode 100644
-index 0000000..0a3749e
+index 0000000..93dd980
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/surface.py
-@@ -0,0 +1,428 @@
+@@ -0,0 +1,427 @@
 +# This module computes the public API surface of a package and audits it.
 +# Re-export chains are resolved to their final targets so the audit sees
 +# the objects a user actually reaches through public paths.
@@ -604,10 +604,9 @@ index 0000000..0a3749e
 +        for name, member in module.members.items():
 +            if name.startswith("_"):
 +                continue
-+            if member.is_alias:
-+                if module is not member.parent:
-+                    continue
-+            elif member.is_module:
++            # Imported names follow griffe's publicness rule: leaving them out
++            # of `__all__` is what makes them private, so they are not flagged.
++            if member.is_alias or member.is_module:
 +                continue
 +            if name not in export_names:
 +                issues.append(
