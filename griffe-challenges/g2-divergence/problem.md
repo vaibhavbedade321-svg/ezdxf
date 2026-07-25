@@ -1,4 +1,4 @@
-Griffe models a package both statically and dynamically but never compares the two, so a public API the source declares one way while import produces another goes unnoticed. Add a runtime divergence report that finds and surfaces those disagreements.
+Add a runtime divergence report that compares Griffe's static and dynamic models for a package.
 
 `griffe check --runtime PACKAGE` loads a package through both agents and reports their disagreements: text goes to standard error, a JSON array of each divergence's `as_dict()` to standard output with `--json`, and it exits 1 exactly when divergences exist. `griffecli.main(argv)` returns the exit code.
 
