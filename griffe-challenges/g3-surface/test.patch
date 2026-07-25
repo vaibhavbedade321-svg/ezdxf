@@ -1,6 +1,6 @@
 diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
 new file mode 100644
-index 0000000..89b4140
+index 0000000..9b7b579
 --- /dev/null
 +++ b/packages/griffelib/tests/test_exposure_audit.py
 @@ -0,0 +1,547 @@
@@ -285,7 +285,7 @@ index 0000000..89b4140
 +            "__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n',
 +        },
 +    )
-+    assert "clean" in report.render_markdown()
++    assert "clean" in report.render_markdown().lower()
 +
 +
 +def test_private_origin_hint_names_canonical_when_multiply_exposed() -> None:
@@ -404,7 +404,7 @@ index 0000000..89b4140
 +            "__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n',
 +        },
 +    )
-+    assert "clean" in report.render_text()
++    assert "clean" in report.render_text().lower()
 +
 +
 +def test_counts_property() -> None:

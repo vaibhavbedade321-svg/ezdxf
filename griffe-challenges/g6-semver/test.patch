@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..d71f6f4
+index 0000000..bbaeff5
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1068 @@
+@@ -0,0 +1,1070 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -966,13 +966,15 @@ index 0000000..d71f6f4
 +
 +
 +def test_renderers_list_breaking_only_paths() -> None:
++    # A distinctive name: a single letter would match incidental text such as
++    # "Recommended bump" and make the assertion vacuous.
 +    report = _bump(
-+        'def t(a, b):\n    """D."""\n\n__all__ = ["t"]\n',
-+        'def t(a):\n    """D."""\n\n__all__ = ["t"]\n',
++        'def widget(a, b):\n    """D."""\n\n__all__ = ["widget"]\n',
++        'def widget(a):\n    """D."""\n\n__all__ = ["widget"]\n',
 +    )
 +    assert report.changes and all(c.kind is griffe.ChangeKind.BREAKING for c in report.changes)
-+    assert "t" in report.render_text()
-+    assert "t" in report.render_markdown()
++    assert "widget" in report.render_text()
++    assert "widget" in report.render_markdown()
 +
 +
 +def test_bump_version_rejects_extra_numeric_component() -> None:
