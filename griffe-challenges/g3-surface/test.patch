@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
 new file mode 100644
-index 0000000..e523360
+index 0000000..1be0f78
 --- /dev/null
 +++ b/packages/griffelib/tests/test_exposure_audit.py
-@@ -0,0 +1,520 @@
+@@ -0,0 +1,533 @@
 +"""Tests for the public API surface audit."""
 +
 +from __future__ import annotations
@@ -203,7 +203,7 @@ index 0000000..e523360
 +    assert keys == sorted(keys)
 +    kinds = [issue.kind for issue in report.issues]
 +    assert kinds.index(griffe.SurfaceIssueKind.DANGLING_EXPORT) < kinds.index(
-+        griffe.SurfaceIssueKind.UNDOCUMENTED
++        griffe.SurfaceIssueKind.UNDOCUMENTED,
 +    )
 +
 +
@@ -228,6 +228,19 @@ index 0000000..e523360
 +    )
 +    inconsistent = report.issues_of_kind(griffe.SurfaceIssueKind.INCONSISTENT_ALL)
 +    assert {issue.public_path for issue in inconsistent} == {"audpkg.helper"}
++
++
++def test_unexported_import_is_not_reported_as_inconsistent() -> None:
++    report = _audit(
++        {
++            "__init__.py": '"""Doc."""\nfrom audpkg.core import tool\n\n__all__ = []\n',
++            "core.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        },
++    )
++    # Leaving an imported name out of `__all__` is what makes it private, so it
++    # is not an inconsistency; only names the module itself defines are.
++    inconsistent = {i.public_path for i in report.issues_of_kind(griffe.SurfaceIssueKind.INCONSISTENT_ALL)}
++    assert "audpkg.tool" not in inconsistent
 +
 +
 +def test_module_without_all_has_no_inconsistency_issue() -> None:
@@ -509,7 +522,7 @@ index 0000000..e523360
 +    exit_code, _, _ = _run_api(tmp_path, modules, "--fail-on", "private-origin")
 +    assert exit_code == 0
 +    exit_code, _, err = _run_api(
-+        tmp_path, modules, "--fail-on", "private-origin", "--fail-on", "undocumented"
++        tmp_path, modules, "--fail-on", "private-origin", "--fail-on", "undocumented",
 +    )
 +    assert exit_code != 0
 +    assert "audclipkg.nodoc" in err
