@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..7b89fac
+index 0000000..a0fe7d0
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,669 @@
+@@ -0,0 +1,738 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
@@ -444,6 +444,29 @@ index 0000000..7b89fac
 +    assert "'''Method doc." in result
 +
 +
++def _lines_outside_docstrings(source: str) -> list[str]:
++    """Return every source line that is not part of a docstring literal."""
++    import ast
++
++    holders = (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
++    spans = []
++    for node in ast.walk(ast.parse(source)):
++        if not isinstance(node, holders) or not node.body:
++            continue
++        first = node.body[0]
++        if (
++            isinstance(first, ast.Expr)
++            and isinstance(first.value, ast.Constant)
++            and isinstance(first.value.value, str)
++        ):
++            spans.append((first.value.lineno, first.value.end_lineno))
++    return [
++        line
++        for number, line in enumerate(source.splitlines(keepends=True), 1)
++        if not any(start <= number <= end for start, end in spans)
++    ]
++
++
 +def test_rewrite_source_preserves_non_docstring_bytes() -> None:
 +    code = dedent(REWRITE_CODE)
 +    with temporary_visited_module(code) as module:
@@ -451,6 +474,8 @@ index 0000000..7b89fac
 +    assert "def run(x, y=1):" in result
 +    assert "class Thing:" in result
 +    assert "def method(self):" in result
++    # Every byte outside the docstring literals is byte-for-byte identical.
++    assert _lines_outside_docstrings(result) == _lines_outside_docstrings(code)
 +
 +
 +def test_rewrite_source_preserves_indentation() -> None:
@@ -585,6 +610,29 @@ index 0000000..7b89fac
 +    assert "trailing slash" in result
 +
 +
++def test_rewrite_source_leaves_unrepresentable_raw_docstring_unchanged() -> None:
++    # A raw string cannot end with an odd number of backslashes and cannot
++    # escape one, so this docstring is skipped instead of being corrupted.
++    code = (
++        dedent(
++            '''
++def f(x):
++    rQQQDoc.
++
++    Args:
++        x (int): trail BSL
++    QQQ
++'''
++        )
++        .replace("QQQ", '"' * 3)
++        .replace("BSL", chr(92))
++    )
++    with temporary_visited_module(code) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    compile(result, "<rewritten>", "exec")
++    assert result == code
++
++
 +def test_rewrite_source_is_stable_when_already_converted() -> None:
 +    code = dedent(REWRITE_CODE)
 +    with temporary_visited_module(code) as module:
@@ -673,6 +721,27 @@ index 0000000..7b89fac
 +    content = (tmp_path / "cvtpkg" / "__init__.py").read_text(encoding="utf8")
 +    assert re.search(r"^Parameters\n-+$", content, flags=re.MULTILINE)
 +    assert "Parameters:" not in content
++
++
++def test_cli_convert_in_place_rewrites_every_module_of_a_package(tmp_path) -> None:
++    from griffecli import main
++
++    package = tmp_path / "multipkg"
++    (package / "nested").mkdir(parents=True)
++    modules = {
++        "__init__.py": '"""Top doc.\n\nParameters:\n    cfg (str): Config path.\n"""\n',
++        "core.py": '"""Core doc.\n\nParameters:\n    a (int): The A.\n"""\n',
++        "nested/__init__.py": '"""Nested doc.\n\nParameters:\n    b (int): The B.\n"""\n',
++    }
++    for name, text in modules.items():
++        (package / name).write_text(text, encoding="utf8")
++
++    assert main(["convert", "multipkg", "-s", str(tmp_path), "-t", "numpy", "--in-place"]) == 0
++
++    for name in modules:
++        content = (package / name).read_text(encoding="utf8")
++        assert re.search(r"^Parameters\n-+$", content, flags=re.MULTILINE), name
++        assert "Parameters:" not in content, name
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..106e395
