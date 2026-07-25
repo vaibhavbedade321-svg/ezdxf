@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_agent_parity.py b/packages/griffelib/tests/test_agent_parity.py
 new file mode 100644
-index 0000000..af6e55e
+index 0000000..893995d
 --- /dev/null
 +++ b/packages/griffelib/tests/test_agent_parity.py
-@@ -0,0 +1,678 @@
+@@ -0,0 +1,720 @@
 +"""Tests for the static/dynamic divergence report."""
 +
 +from __future__ import annotations
@@ -682,6 +682,48 @@ index 0000000..af6e55e
 +    # The option reaches both independent loads, not just one.
 +    assert len(recorder.seen) == 2
 +    assert static is not dynamic
++
++
++def test_user_injected_dunder_on_plain_dataclass_is_reported() -> None:
++    divergences = _divergences(
++        """
++        from dataclasses import dataclass
++
++        @dataclass
++        class Plain:
++            x: int = 0
++
++        Plain.__lt__ = lambda self, other: True
++        """,
++    )
++    # A plain @dataclass generates no ordering methods, so this one is the
++    # user's and must not be suppressed along with the generated members.
++    assert griffe.DivergenceKind.MEMBER_MISSING in _kinds(divergences)
++    assert any(d.object_path.endswith("__lt__") for d in divergences)
++
++
++def test_ordered_frozen_dataclass_methods_stay_suppressed() -> None:
++    divergences = _divergences(
++        """
++        from dataclasses import dataclass
++
++        @dataclass(order=True, frozen=True)
++        class Ordered:
++            x: int = 0
++        """,
++    )
++    assert not divergences
++
++
++def test_cli_json_requires_runtime(tmp_path, capsys) -> None:
++    from griffecli import main
++
++    package = tmp_path / "jsonpkg"
++    package.mkdir()
++    (package / "__init__.py").write_text('"""Doc."""\n', encoding="utf8")
++    exit_code = main(["check", "--json", "-s", str(tmp_path), "jsonpkg"])
++    capsys.readouterr()
++    assert exit_code != 0
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..cdca388

@@ -1,5 +1,5 @@
 diff --git a/packages/griffecli/src/griffecli/_internal/cli.py b/packages/griffecli/src/griffecli/_internal/cli.py
-index 232c1e7..b20431a 100644
+index 232c1e7..f316e61 100644
 --- a/packages/griffecli/src/griffecli/_internal/cli.py
 +++ b/packages/griffecli/src/griffecli/_internal/cli.py
 @@ -324,6 +324,21 @@ def get_parser() -> argparse.ArgumentParser:
@@ -42,10 +42,14 @@ index 232c1e7..b20431a 100644
  
      Returns:
          `0` for success, `1` for failure.
-@@ -474,6 +493,31 @@ def check(
+@@ -474,6 +493,35 @@ def check(
      if append_sys_path:
          search_paths.extend(sys.path)
  
++    if as_json and not runtime:
++        logger.error("--json only applies to --runtime")
++        return 1
++
 +    if runtime:
 +        from griffe._internal.divergence import find_divergences  # noqa: PLC0415
 +        from griffe._internal.loader import load_both  # noqa: PLC0415
@@ -130,10 +134,10 @@ index a559e0f..b29a6c8 100644
      "load_pypi",
 diff --git a/packages/griffelib/src/griffe/_internal/divergence.py b/packages/griffelib/src/griffe/_internal/divergence.py
 new file mode 100644
-index 0000000..991ec75
+index 0000000..c3dd925
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/divergence.py
-@@ -0,0 +1,517 @@
+@@ -0,0 +1,533 @@
 +# This module defines the divergence report between static and dynamic analysis.
 +# The same package is loaded through both the AST visitor and the runtime
 +# inspector, and the two resulting trees are compared member by member.
@@ -486,13 +490,7 @@ index 0000000..991ec75
 +        "__init__",
 +        "__repr__",
 +        "__eq__",
-+        "__lt__",
-+        "__le__",
-+        "__gt__",
-+        "__ge__",
 +        "__hash__",
-+        "__setattr__",
-+        "__delattr__",
 +        "__match_args__",
 +        "__dataclass_fields__",
 +        "__dataclass_params__",
@@ -500,9 +498,31 @@ index 0000000..991ec75
 +    },
 +)
 +
++# These are only generated when the decorator asks for them, so suppressing
++# them unconditionally would hide a user-injected __lt__ or __setattr__.
++_DATACLASS_ORDER_GENERATED = frozenset({"__lt__", "__le__", "__gt__", "__ge__"})
++_DATACLASS_FROZEN_GENERATED = frozenset({"__setattr__", "__delattr__"})
++
++
++def _dataclass_options(static_parent: Object) -> str:
++    """Return the text of the `@dataclass` decorator, arguments included."""
++    for decorator in getattr(static_parent, "decorators", ()) or ():
++        if (decorator.callable_path or "").rsplit(".", 1)[-1] == "dataclass":
++            return str(decorator.value)
++    return ""
++
 +
 +def _is_dataclass_generated(name: str, static_parent: Object) -> bool:
-+    return name in _DATACLASS_GENERATED and "dataclass" in static_parent.labels
++    if "dataclass" not in static_parent.labels:
++        return False
++    if name in _DATACLASS_GENERATED:
++        return True
++    options = _dataclass_options(static_parent)
++    if name in _DATACLASS_ORDER_GENERATED:
++        return "order=True" in options
++    if name in _DATACLASS_FROZEN_GENERATED:
++        return "frozen=True" in options
++    return False
 +
 +
 +def _effective_kind(obj: Object) -> Kind:
