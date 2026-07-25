@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
 new file mode 100644
-index 0000000..8094c6d
+index 0000000..caf4929
 --- /dev/null
 +++ b/packages/griffelib/tests/test_exposure_audit.py
-@@ -0,0 +1,607 @@
+@@ -0,0 +1,533 @@
 +"""Tests for the public API surface audit."""
 +
 +from __future__ import annotations
@@ -178,19 +178,6 @@ index 0000000..8094c6d
 +    assert all_keys == sub_keys
 +
 +
-+def test_cyclic_alias_is_reported() -> None:
-+    report = _audit(
-+        {
-+            "__init__.py": '"""Doc."""\n',
-+            "left.py": '"""Doc."""\nfrom audpkg.right import thing\n\n__all__ = ["thing"]\n',
-+            "right.py": '"""Doc."""\nfrom audpkg.left import thing\n\n__all__ = ["thing"]\n',
-+        },
-+    )
-+    cyclic = report.issues_of_kind(griffe.SurfaceIssueKind.CYCLIC_ALIAS)
-+    assert cyclic
-+    assert any("thing" in issue.public_path for issue in cyclic)
-+
-+
 +def test_canonical_path_breaks_length_ties_alphabetically() -> None:
 +    report = _audit(
 +        {
@@ -228,53 +215,6 @@ index 0000000..8094c6d
 +        },
 +    )
 +    assert report.issues == []
-+
-+
-+def test_private_annotation_leak_is_reported() -> None:
-+    report = _audit(
-+        {
-+            "__init__.py": (
-+                '"""Doc."""\nfrom audpkg._impl import make\n\n__all__ = ["make"]\n'
-+            ),
-+            "_impl.py": (
-+                'class Thing:\n    """Doc."""\n\n'
-+                'def make() -> Thing:\n    """Doc."""\n'
-+            ),
-+        },
-+    )
-+    leaks = report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_LEAK)
-+    assert any(issue.public_path == "audpkg.make" for issue in leaks)
-+
-+
-+def test_no_leak_when_private_object_is_publicly_reexported() -> None:
-+    report = _audit(
-+        {
-+            "__init__.py": (
-+                '"""Doc."""\nfrom audpkg._impl import Thing, make\n\n'
-+                '__all__ = ["Thing", "make"]\n'
-+            ),
-+            "_impl.py": (
-+                'class Thing:\n    """Doc."""\n\n'
-+                'def make() -> Thing:\n    """Doc."""\n'
-+            ),
-+        },
-+    )
-+    assert not report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_LEAK)
-+
-+
-+def test_private_base_class_leak_is_reported() -> None:
-+    report = _audit(
-+        {
-+            "__init__.py": (
-+                '"""Doc."""\nfrom audpkg._impl import _Base\n\n\n'
-+                'class Public(_Base):\n    """Doc."""\n\n\n'
-+                '__all__ = ["Public"]\n'
-+            ),
-+            "_impl.py": 'class _Base:\n    """Doc."""\n',
-+        },
-+    )
-+    leaks = report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_LEAK)
-+    assert any(issue.public_path == "audpkg.Public" for issue in leaks)
 +
 +
 +def test_public_definition_missing_from_all_is_reported() -> None:
@@ -519,20 +459,6 @@ index 0000000..8094c6d
 +        report = griffe.audit_surface(package)
 +    paths = {issue.public_path for issue in report.issues_of_kind(griffe.SurfaceIssueKind.MUTABLE_DEFAULT)}
 +    assert paths == {"audinspkg.f"}
-+
-+
-+def test_private_leak_via_parameter_annotation_is_reported() -> None:
-+    report = _audit(
-+        {
-+            "__init__.py": (
-+                '"""Doc."""\nfrom audpkg._impl import Thing\n\n'
-+                'def use(x: Thing) -> None:\n    """Doc."""\n\n__all__ = ["use"]\n'
-+            ),
-+            "_impl.py": 'class Thing:\n    """Doc."""\n',
-+        },
-+    )
-+    leaks = report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_LEAK)
-+    assert any(issue.public_path == "audpkg.use" for issue in leaks)
 +
 +
 +def test_undocumented_public_submodule_is_reported() -> None:

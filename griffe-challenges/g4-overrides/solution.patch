@@ -186,10 +186,10 @@ index a559e0f..57e287b 100644
      "dynamic_import",
      "find_breaking_changes",
 diff --git a/packages/griffelib/src/griffe/_internal/enumerations.py b/packages/griffelib/src/griffe/_internal/enumerations.py
-index 17e346a..a1b66c3 100644
+index 17e346a..2046b2a 100644
 --- a/packages/griffelib/src/griffe/_internal/enumerations.py
 +++ b/packages/griffelib/src/griffe/_internal/enumerations.py
-@@ -150,6 +150,29 @@ class BreakageKind(str, Enum):
+@@ -150,6 +150,27 @@ class BreakageKind(str, Enum):
      """Base class was removed"""
  
  
@@ -212,8 +212,6 @@ index 17e346a..a1b66c3 100644
 +    """Overriding method changed the method flavor"""
 +    KIND_CHANGED = "Method and overriding member have different kinds"
 +    """Method and overriding member have different kinds"""
-+    BASE_CONFLICT = "Inherited definitions from several bases are incompatible"
-+    """Inherited definitions from several bases are incompatible"""
 +
 +
  class Parser(str, Enum):
@@ -221,10 +219,10 @@ index 17e346a..a1b66c3 100644
  
 diff --git a/packages/griffelib/src/griffe/_internal/overrides.py b/packages/griffelib/src/griffe/_internal/overrides.py
 new file mode 100644
-index 0000000..802ae19
+index 0000000..a2bfe73
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/overrides.py
-@@ -0,0 +1,365 @@
+@@ -0,0 +1,327 @@
 +# This module checks method overrides for signature compatibility.
 +# A subclass method that cannot be substituted for the method it overrides
 +# breaks callers that hold the parent type.
@@ -414,7 +412,7 @@ index 0000000..802ae19
 +        )
 +
 +
-+def _iter_override_pairs(cls: Class) -> Iterator[tuple[Object, Object, Class]]:
++def _iter_override_pairs(cls: Class) -> Iterator[tuple[Object, Object]]:
 +    try:
 +        ancestors = cls.mro()
 +    except (AliasResolutionError, CyclicAliasError):
@@ -427,7 +425,7 @@ index 0000000..802ae19
 +            if base_member is None or base_member.is_alias:
 +                continue
 +            if base_member.is_function or base_member.is_attribute:
-+                yield member, base_member, ancestor  # ty:ignore[invalid-yield]
++                yield member, base_member  # ty:ignore[invalid-yield]
 +            break
 +
 +
@@ -479,7 +477,7 @@ index 0000000..802ae19
 +    for cls in _iter_classes(package):
 +        if not _bases_resolvable(cls):
 +            continue
-+        for child, parent, ancestor in _iter_override_pairs(cls):
++        for child, parent in _iter_override_pairs(cls):
 +            if child.name.startswith("__") and not child.name.endswith("__"):
 +                continue
 +            if child.is_function is not parent.is_function:
@@ -514,7 +512,6 @@ index 0000000..802ae19
 +            parent_view = _without_first_parameter(parent) if skip_first else parent
 +            for kind, details in _compare_signatures(child_view, parent_view):
 +                issues.append(OverrideIssue(kind, child.path, parent.path, details=details))
-+        issues.extend(_base_conflicts(cls))
 +    issues.sort(key=lambda issue: (issue.method_path, issue.kind.name))
 +    return issues
 +
@@ -526,43 +523,6 @@ index 0000000..802ae19
 +        return "a property"
 +    return "an attribute"
 +
-+
-+def _base_conflicts(cls: Class) -> Iterator[OverrideIssue]:
-+    """Yield conflicts between incompatible inherited definitions.
-+
-+    When a class inherits the same method name from several bases without
-+    overriding it, the definition first in the method resolution order is
-+    the one instances use; it must be able to substitute for the later
-+    ones.
-+    """
-+    try:
-+        ancestors = cls.mro()
-+    except (AliasResolutionError, CyclicAliasError):
-+        return
-+    inherited: dict[str, list[Function]] = {}
-+    for ancestor in ancestors:
-+        for name, member in ancestor.members.items():
-+            if member.is_alias or not member.is_function:
-+                continue
-+            if name.startswith("__") or name in cls.members:
-+                continue
-+            if {"staticmethod", "classmethod"} & member.labels:
-+                continue
-+            inherited.setdefault(name, []).append(member)  # ty:ignore[invalid-argument-type]
-+    for name, definitions in inherited.items():
-+        if len(definitions) < 2:
-+            continue
-+        winner = definitions[0]
-+        winner_view = _without_first_parameter(winner)
-+        for challenged in definitions[1:]:
-+            challenged_view = _without_first_parameter(challenged)
-+            if list(_compare_signatures(winner_view, challenged_view)):
-+                yield OverrideIssue(
-+                    OverrideIssueKind.BASE_CONFLICT,
-+                    f"{cls.path}.{name}",
-+                    challenged.path,
-+                    details=f"resolved to {winner.path}, incompatible with {challenged.path}",
-+                )
 +
 +
 +class _FunctionView:
@@ -579,10 +539,10 @@ index 0000000..802ae19
 +        self._parameters = parameters
 +        self._by_name = {parameter.name: parameter for parameter in parameters}
 +
-+    def __iter__(self):  # noqa: ANN204
++    def __iter__(self):
 +        return iter(self._parameters)
 +
-+    def __getitem__(self, name: str):  # noqa: ANN204
++    def __getitem__(self, name: str):
 +        return self._by_name[name]
 +
 +

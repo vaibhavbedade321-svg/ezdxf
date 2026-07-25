@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_substitution_check.py b/packages/griffelib/tests/test_substitution_check.py
 new file mode 100644
-index 0000000..fbaf8d1
+index 0000000..5eb14d4
 --- /dev/null
 +++ b/packages/griffelib/tests/test_substitution_check.py
-@@ -0,0 +1,718 @@
+@@ -0,0 +1,614 @@
 +"""Tests for the override signature compatibility check."""
 +
 +from __future__ import annotations
@@ -362,93 +362,6 @@ index 0000000..fbaf8d1
 +    assert issues == []
 +
 +
-+def test_incompatible_diamond_bases_are_reported() -> None:
-+    issues = _issues(
-+        """
-+        class Left:
-+            def act(self, a, b): ...
-+
-+        class Right:
-+            def act(self, a, b, c): ...
-+
-+        class Both(Left, Right): ...
-+        """,
-+    )
-+    conflicts = [i for i in issues if i.kind is griffe.OverrideIssueKind.BASE_CONFLICT]
-+    assert len(conflicts) == 1
-+    assert conflicts[0].method_path == "ovrpkg.Both.act"
-+
-+
-+def test_third_incompatible_base_is_also_reported() -> None:
-+    issues = _issues(
-+        """
-+        class First:
-+            def act(self, a): ...
-+
-+        class Second:
-+            def act(self, a): ...
-+
-+        class Third:
-+            def act(self, a, b): ...
-+
-+        class All(First, Second, Third): ...
-+        """,
-+    )
-+    conflicts = [i for i in issues if i.kind is griffe.OverrideIssueKind.BASE_CONFLICT]
-+    assert len(conflicts) == 1
-+    assert conflicts[0].base_path == "ovrpkg.Third.act"
-+
-+
-+def test_compatible_diamond_bases_are_not_reported() -> None:
-+    issues = _issues(
-+        """
-+        class Left:
-+            def act(self, a, b=1): ...
-+
-+        class Right:
-+            def act(self, a, b=1): ...
-+
-+        class Both(Left, Right): ...
-+        """,
-+    )
-+    assert issues == []
-+
-+
-+def test_overridden_diamond_method_is_not_a_conflict() -> None:
-+    issues = _issues(
-+        """
-+        class Left:
-+            def act(self, a): ...
-+
-+        class Right:
-+            def act(self, a, b): ...
-+
-+        class Both(Left, Right):
-+            def act(self, a, b=None): ...
-+        """,
-+    )
-+    assert not [i for i in issues if i.kind is griffe.OverrideIssueKind.BASE_CONFLICT]
-+
-+
-+def test_dunder_and_flavored_diamond_methods_are_not_conflicts() -> None:
-+    issues = _issues(
-+        """
-+        class Left:
-+            def __init__(self, a): ...
-+            @staticmethod
-+            def make(a): ...
-+
-+        class Right:
-+            def __init__(self, a, b): ...
-+            @staticmethod
-+            def make(a, b): ...
-+
-+        class Both(Left, Right): ...
-+        """,
-+    )
-+    assert not [i for i in issues if i.kind is griffe.OverrideIssueKind.BASE_CONFLICT]
-+
-+
 +def test_unresolvable_bases_are_skipped() -> None:
 +    issues = _issues(
 +        """
@@ -544,23 +457,6 @@ index 0000000..fbaf8d1
 +    assert "ovrpkg.Base.process" in text
 +    assert issue.kind.value in text
 +    assert str(issue) == text
-+
-+
-+def test_classmethod_is_excluded_from_base_conflict() -> None:
-+    issues = _issues(
-+        """
-+        class A:
-+            @classmethod
-+            def make(cls, x): ...
-+
-+        class B:
-+            @classmethod
-+            def make(cls, x, y): ...
-+
-+        class C(A, B): ...
-+        """,
-+    )
-+    assert griffe.OverrideIssueKind.BASE_CONFLICT not in _kinds(issues)
 +
 +
 +def _run_overrides(tmp_path, code: str, *args: str) -> tuple[int, str, str]:
