@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..5dc2bd8
+index 0000000..d71f6f4
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1037 @@
+@@ -0,0 +1,1068 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1041,6 +1041,37 @@ index 0000000..5dc2bd8
 +    )
 +    assert exit_code == 0
 +    assert out.strip() == "1.2.4"
++
++
++def test_renderers_list_removed_and_deprecated_paths() -> None:
++    removed = _bump(
++        'def keep():\n    """D."""\n\ndef gone():\n    """D."""\n\n__all__ = ["keep", "gone"]\n',
++        'def keep():\n    """D."""\n\ndef gone():\n    """D."""\n\n__all__ = ["keep"]\n',
++    )
++    assert {change.kind for change in removed.changes} == {griffe.ChangeKind.REMOVED}
++    assert "gone" in removed.render_text()
++    assert "gone" in removed.render_markdown()
++
++    deprecated = _bump(
++        'def keep(a):\n    """D."""\n\n__all__ = ["keep"]\n',
++        'from warnings import deprecated\n\n@deprecated("x")\n'
++        'def keep(a):\n    """D."""\n\n__all__ = ["keep"]\n',
++    )
++    assert {change.kind for change in deprecated.changes} == {griffe.ChangeKind.DEPRECATED}
++    assert "keep" in deprecated.render_text()
++    assert "keep" in deprecated.render_markdown()
++
++
++def test_bump_between_forwards_scalar_load_options(tmp_path) -> None:
++    code = 'def t(a):\n    """D."""\n\n__all__ = ["t"]\n'
++    old_path = _write_version(tmp_path, "old", code)
++    new_path = _write_version(tmp_path, "new", code)
++    # A scalar loading option is forwarded, not only the extensions sequence.
++    report = griffe.bump_between("semverpkg", old_path, new_path, allow_inspection=False)
++    assert report.bump is griffe.Bump.PATCH
++    # Options really reach the loader rather than being swallowed.
++    with pytest.raises(TypeError):
++        griffe.bump_between("semverpkg", old_path, new_path, definitely_not_an_option=True)
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..dcf581f
