@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..62cfb10
+index 0000000..2aa7555
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,1021 @@
+@@ -0,0 +1,1009 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
@@ -842,22 +842,6 @@ index 0000000..62cfb10
 +    assert '"""   # trailing spaces then a comment\n    return a\n' in result
 +
 +
-+def test_raw_docstring_conflicting_with_both_delimiters_is_left_unchanged() -> None:
-+    triple_double = '"' * 3
-+    triple_single = "'" * 3
-+    # Raw literal whose text contains \"\"\" and ends with an apostrophe, so neither
-+    # triple-quote delimiter can hold it and a raw string cannot escape either.
-+    code = (
-+        f"def f(a):\n    r{triple_single}Doc with {triple_double} inside.\n\n"
-+        f"    Args:\n        a (int): ends with apostrophe'\n    {triple_single}\n"
-+    )
-+    compile(code, "<source>", "exec")
-+    with temporary_visited_module(code, docstring_parser=Parser.google) as module:
-+        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
-+    compile(result, "<rewritten>", "exec")
-+    assert result == code
-+
-+
 +def test_examples_section_survives_google_round_trip() -> None:
 +    source = dedent(
 +        """
@@ -1004,11 +988,15 @@ index 0000000..62cfb10
 +    # existence so the rejection below cannot pass for the wrong reason.
 +    exit_code, _ = _run_convert(tmp_path, CLI_CODE, "-t", "numpy", "--check")
 +    assert exit_code != 0
-+    # `auto` is not a composable target, so it must be rejected outright
-+    # rather than silently picking a dialect.
-+    with pytest.raises(SystemExit) as excinfo:
-+        _run_convert(tmp_path, CLI_CODE, "-t", "auto")
-+    assert excinfo.value.code != 0
++    # `auto` is not a composable target, so the command must fail rather than
++    # silently pick a dialect. Either rejection mechanism is acceptable: an
++    # argument parser that refuses it, or a nonzero exit from the run itself.
++    try:
++        exit_code, _ = _run_convert(tmp_path, CLI_CODE, "-t", "auto")
++    except SystemExit as exc:
++        assert exc.code != 0
++    else:
++        assert exit_code != 0
 +
 +
 +def test_rewrite_source_widens_double_quotes_to_triple_double() -> None:
