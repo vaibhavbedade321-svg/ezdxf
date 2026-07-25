@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..e3e67d9
+index 0000000..ef23fcf
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,1040 @@
+@@ -0,0 +1,1043 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
@@ -530,7 +530,10 @@ index 0000000..e3e67d9
 +        result = griffe.rewrite_source(code, module, "numpy", source_style="sphinx")
 +    assert "'''" in result
 +    assert '"""' not in result
-+    assert re.search(r"^    Returns\n    -+$", result, flags=re.MULTILINE)
++    # Layout of the newly created lines is the implementation's choice;
++    # only the widening, the quote character and the heading are required.
++    compile(result, "<rewritten>", "exec")
++    assert re.search(r"^\s*Returns\n\s*-+$", result, flags=re.MULTILINE)
 +
 +
 +def test_rewrite_source_preserves_trailing_comment_after_docstring() -> None:
