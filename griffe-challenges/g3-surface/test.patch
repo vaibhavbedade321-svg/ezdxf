@@ -1,6 +1,6 @@
 diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
 new file mode 100644
-index 0000000..9b7b579
+index 0000000..9b3ba0a
 --- /dev/null
 +++ b/packages/griffelib/tests/test_exposure_audit.py
 @@ -0,0 +1,547 @@
@@ -35,7 +35,7 @@ index 0000000..9b7b579
 +            "__init__.py": '"""Package doc."""\n\ndef tool():\n    """Tool doc."""\n',
 +        },
 +    )
-+    assert report.issues == []
++    assert not report.issues
 +
 +
 +def test_private_origin_export_is_reported() -> None:
@@ -214,7 +214,7 @@ index 0000000..9b7b579
 +            "_vault.py": 'def secret(): ...\n\nclass Hidden: ...\n',
 +        },
 +    )
-+    assert report.issues == []
++    assert not report.issues
 +
 +
 +def test_private_module_dangling_export_is_not_reported() -> None:
@@ -446,9 +446,9 @@ index 0000000..9b7b579
 +        {"__init__.py": '"""Doc."""\n\ndef tool(items=[]):\n    """Doc."""\n'},
 +    )
 +    assert "audpkg" in report.summary()
-+    assert report.affected_paths == ["audpkg.tool"]
++    assert list(report.affected_paths) == ["audpkg.tool"]
 +    clean = _audit({"__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n'})
-+    assert clean.affected_paths == []
++    assert not clean.affected_paths
 +
 +
 +def test_mutable_default_covers_dict_set_and_methods() -> None:
@@ -528,7 +528,7 @@ index 0000000..9b7b579
 +    filtered = report.filter(griffe.SurfaceIssueKind.MUTABLE_DEFAULT)
 +    assert all(issue.kind is griffe.SurfaceIssueKind.MUTABLE_DEFAULT for issue in filtered.issues)
 +    assert filtered.counts == {"MUTABLE_DEFAULT": 1}
-+    assert filtered.affected_paths == ["audpkg.tool"]
++    assert list(filtered.affected_paths) == ["audpkg.tool"]
 +
 +
 +def test_cli_api_multiple_fail_on_gates_on_any_kind(tmp_path) -> None:
@@ -546,7 +546,7 @@ index 0000000..9b7b579
 +    clean = {"__init__.py": '"""Doc."""\n\ndef tool():\n    """Doc."""\n'}
 +    exit_code, out, err = _run_api(tmp_path, clean, "--json")
 +    assert exit_code == 0
-+    assert json.loads(out)["issues"] == []
++    assert not json.loads(out)["issues"]
 +    assert err == ""
 +    exit_code, _, err = _run_api(tmp_path, clean, "--markdown")
 +    assert exit_code == 0

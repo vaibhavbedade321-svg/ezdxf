@@ -1,6 +1,6 @@
 diff --git a/packages/griffelib/tests/test_agent_parity.py b/packages/griffelib/tests/test_agent_parity.py
 new file mode 100644
-index 0000000..62f39bb
+index 0000000..882a676
 --- /dev/null
 +++ b/packages/griffelib/tests/test_agent_parity.py
 @@ -0,0 +1,641 @@
@@ -70,7 +70,7 @@ index 0000000..62f39bb
 +            limit = 10
 +        """,
 +    )
-+    assert divergences == []
++    assert not divergences
 +
 +
 +def test_imported_names_are_not_divergences() -> None:
@@ -80,7 +80,7 @@ index 0000000..62f39bb
 +        from json import dumps as encode
 +        """,
 +    )
-+    assert divergences == []
++    assert not divergences
 +
 +
 +def test_wraps_preserving_decorator_has_no_divergences() -> None:
@@ -99,7 +99,7 @@ index 0000000..62f39bb
 +            return a
 +        """,
 +    )
-+    assert divergences == []
++    assert not divergences
 +
 +
 +def test_signature_erasing_decorator_is_reported_once() -> None:
@@ -208,7 +208,7 @@ index 0000000..62f39bb
 +        def func() -> None: ...
 +        """,
 +    )
-+    assert divergences == []
++    assert not divergences
 +
 +
 +def test_property_is_not_a_kind_divergence() -> None:
@@ -220,7 +220,7 @@ index 0000000..62f39bb
 +                return "x"
 +        """,
 +    )
-+    assert divergences == []
++    assert not divergences
 +
 +
 +def test_runtime_computed_class_is_a_kind_divergence() -> None:
@@ -241,7 +241,7 @@ index 0000000..62f39bb
 +
 +def test_runtime_injected_module_attributes_are_not_divergences() -> None:
 +    divergences = _divergences("value = 1\n")
-+    assert divergences == []
++    assert not divergences
 +
 +
 +def test_dataclass_generated_methods_are_not_divergences() -> None:
@@ -255,7 +255,7 @@ index 0000000..62f39bb
 +            y: int = 0
 +        """,
 +    )
-+    assert divergences == []
++    assert not divergences
 +
 +
 +def test_order_dataclass_generated_methods_are_not_divergences() -> None:
@@ -269,7 +269,7 @@ index 0000000..62f39bb
 +            y: int = 0
 +        """,
 +    )
-+    assert divergences == []
++    assert not divergences
 +
 +
 +def test_frozen_dataclass_generated_methods_are_not_divergences() -> None:
@@ -283,7 +283,7 @@ index 0000000..62f39bb
 +            y: int = 0
 +        """,
 +    )
-+    assert divergences == []
++    assert not divergences
 +
 +
 +def test_annotation_only_declarations_are_not_divergences() -> None:
@@ -295,7 +295,7 @@ index 0000000..62f39bb
 +            timeout: float
 +        """,
 +    )
-+    assert divergences == []
++    assert not divergences
 +
 +
 +def test_one_sided_annotation_is_not_a_divergence() -> None:
@@ -318,7 +318,7 @@ index 0000000..62f39bb
 +            pass
 +        """,
 +    )
-+    assert [d.object_path for d in divergences if ".__" in d.object_path] == []
++    assert not [d.object_path for d in divergences if ".__" in d.object_path]
 +
 +
 +def test_runtime_appended_all_is_an_exports_divergence() -> None:
@@ -343,7 +343,7 @@ index 0000000..62f39bb
 +        def func() -> None: ...
 +        """,
 +    )
-+    assert divergences == []
++    assert not divergences
 +
 +
 +def test_conditionally_defined_member_is_reported() -> None:
@@ -431,7 +431,7 @@ index 0000000..62f39bb
 +        class Child(Base): ...
 +        """,
 +    )
-+    assert divergences == []
++    assert not divergences
 +
 +
 +def test_nested_class_members_are_compared() -> None:

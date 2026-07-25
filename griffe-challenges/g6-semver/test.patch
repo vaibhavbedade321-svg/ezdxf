@@ -1,6 +1,6 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..bbaeff5
+index 0000000..8957369
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
 @@ -0,0 +1,1070 @@
@@ -36,9 +36,9 @@ index 0000000..bbaeff5
 +    code = '"""Doc."""\n\ndef tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    report = _bump(code, code)
 +    assert report.bump is griffe.Bump.PATCH
-+    assert report.additions == []
-+    assert report.removals == []
-+    assert report.breaking == []
++    assert not report.additions
++    assert not report.removals
++    assert not report.breaking
 +
 +
 +def test_docstring_only_change_is_patch() -> None:
@@ -55,8 +55,8 @@ index 0000000..bbaeff5
 +    )
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MINOR
-+    assert report.additions == ["helper"]
-+    assert report.removals == []
++    assert list(report.additions) == ["helper"]
++    assert not report.removals
 +
 +
 +def test_added_private_object_is_patch() -> None:
@@ -95,7 +95,7 @@ index 0000000..bbaeff5
 +    )
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MAJOR
-+    assert report.additions == ["helper"]
++    assert list(report.additions) == ["helper"]
 +    assert report.breaking
 +
 +
@@ -107,7 +107,7 @@ index 0000000..bbaeff5
 +    )
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MINOR
-+    assert report.additions == ["Tool.run"]
++    assert list(report.additions) == ["Tool.run"]
 +
 +
 +def test_added_class_method_removal_is_major() -> None:
@@ -158,11 +158,11 @@ index 0000000..bbaeff5
 +    )
 +    payload = json.loads(json.dumps(report.as_dict(), cls=griffe.JSONEncoder))
 +    assert payload["bump"] == "major"
-+    assert payload["additions"] == ["helper"]
++    assert list(payload["additions"]) == ["helper"]
 +    assert payload["breaking"]
-+    assert payload["removals"] == []
-+    assert payload["expansions"] == []
-+    assert payload["deprecations"] == []
++    assert not payload["removals"]
++    assert not payload["expansions"]
++    assert not payload["deprecations"]
 +    assert set(payload["counts"]) == {"added", "breaking"}
 +    kinds = {change["kind"] for change in payload["changes"]}
 +    assert {"added", "breaking"} <= kinds
@@ -184,8 +184,8 @@ index 0000000..bbaeff5
 +    new = 'def tool(a, b=1):\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MINOR
-+    assert report.expansions == ["tool"]
-+    assert report.additions == []
++    assert list(report.expansions) == ["tool"]
++    assert not report.additions
 +
 +
 +def test_gained_var_positional_is_minor() -> None:
@@ -193,7 +193,7 @@ index 0000000..bbaeff5
 +    new = 'def tool(a, *args):\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MINOR
-+    assert report.expansions == ["tool"]
++    assert list(report.expansions) == ["tool"]
 +
 +
 +def test_gained_var_keyword_is_minor() -> None:
@@ -207,7 +207,7 @@ index 0000000..bbaeff5
 +    new = 'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MAJOR
-+    assert report.expansions == []
++    assert not report.expansions
 +
 +
 +def test_counts_maps_change_kinds() -> None:
@@ -240,8 +240,8 @@ index 0000000..bbaeff5
 +    new = 'def tool(a, b=1):\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MINOR
-+    assert report.expansions == ["tool"]
-+    assert report.breaking == []
++    assert list(report.expansions) == ["tool"]
++    assert not report.breaking
 +
 +
 +def test_render_text_lists_changes() -> None:
@@ -306,7 +306,7 @@ index 0000000..bbaeff5
 +    )
 +    report = griffe.bump_between("semverpkg", old_path, new_path)
 +    assert report.bump is griffe.Bump.MINOR
-+    assert report.additions == ["helper"]
++    assert list(report.additions) == ["helper"]
 +
 +
 +def test_recommend_bump_on_loader_built_models(tmp_path) -> None:
@@ -368,8 +368,8 @@ index 0000000..bbaeff5
 +    }
 +    report = _bump_multi(old, new)
 +    assert report.bump is griffe.Bump.PATCH
-+    assert report.additions == []
-+    assert report.removals == []
++    assert not report.additions
++    assert not report.removals
 +
 +
 +def test_reexported_class_member_addition_is_minor() -> None:
@@ -403,7 +403,7 @@ index 0000000..bbaeff5
 +    assert report.bump is griffe.Bump.MAJOR
 +    breaking_paths = [c.path for c in report.changes_of_kind(griffe.ChangeKind.BREAKING)]
 +    assert "api.b" in breaking_paths
-+    assert report.removals == []
++    assert not report.removals
 +    assert not any("_sub" in change.path for change in report.changes)
 +
 +
@@ -465,8 +465,8 @@ index 0000000..bbaeff5
 +    assert report.bump is griffe.Bump.MAJOR
 +    assert set(report.counts) == {"breaking"}
 +    assert report.counts["breaking"] >= 2
-+    assert report.changes_of_kind(griffe.ChangeKind.ADDED) == []
-+    assert report.changes_of_kind(griffe.ChangeKind.REMOVED) == []
++    assert not report.changes_of_kind(griffe.ChangeKind.ADDED)
++    assert not report.changes_of_kind(griffe.ChangeKind.REMOVED)
 +    payload = report.as_dict()
 +    breaking_entries = [c for c in payload["changes"] if c["kind"] == "breaking"]
 +    assert len(breaking_entries) == report.counts["breaking"]
@@ -481,7 +481,7 @@ index 0000000..bbaeff5
 +    new = 'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    report = _bump(old, new)
 +    assert report.breaking
-+    assert report.removals == []
++    assert not report.removals
 +    breaking_paths = [c.path for c in report.changes_of_kind(griffe.ChangeKind.BREAKING)]
 +    assert "helper" in breaking_paths
 +    assert not any(c.path == "helper" for c in report.changes_of_kind(griffe.ChangeKind.REMOVED))
@@ -498,7 +498,7 @@ index 0000000..bbaeff5
 +    )
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MAJOR
-+    assert report.removals == ["helper"]
++    assert list(report.removals) == ["helper"]
 +    assert [c.path for c in report.changes_of_kind(griffe.ChangeKind.REMOVED)] == ["helper"]
 +
 +
@@ -587,7 +587,7 @@ index 0000000..bbaeff5
 +    assert exit_code == 0
 +    payload = json.loads(output)
 +    assert payload["bump"] == "minor"
-+    assert payload["additions"] == ["helper"]
++    assert list(payload["additions"]) == ["helper"]
 +
 +
 +def test_cli_semver_markdown(tmp_path) -> None:
@@ -677,8 +677,8 @@ index 0000000..bbaeff5
 +    )
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MINOR
-+    assert report.deprecations == ["tool"]
-+    assert report.as_dict()["deprecations"] == ["tool"]
++    assert list(report.deprecations) == ["tool"]
++    assert list(report.as_dict()["deprecations"]) == ["tool"]
 +
 +
 +def test_already_deprecated_object_is_patch() -> None:
@@ -688,7 +688,7 @@ index 0000000..bbaeff5
 +    )
 +    report = _bump(code, code)
 +    assert report.bump is griffe.Bump.PATCH
-+    assert report.deprecations == []
++    assert not report.deprecations
 +
 +
 +def test_ignored_names_are_excluded() -> None:
@@ -703,7 +703,7 @@ index 0000000..bbaeff5
 +    ):
 +        report = griffe.recommend_bump(old_module, new_module, ignore=["helper"])
 +    assert report.bump is griffe.Bump.PATCH
-+    assert report.changes == []
++    assert not report.changes
 +
 +
 +def test_ignored_container_excludes_nested_changes() -> None:
@@ -718,7 +718,7 @@ index 0000000..bbaeff5
 +    ):
 +        report = griffe.recommend_bump(old_module, new_module, ignore=["Tool"])
 +    assert report.bump is griffe.Bump.PATCH
-+    assert report.changes == []
++    assert not report.changes
 +
 +
 +def test_ignored_reexported_container_excludes_nested_changes() -> None:
@@ -740,7 +740,7 @@ index 0000000..bbaeff5
 +        assert griffe.recommend_bump(old_module, new_module).bump is griffe.Bump.MINOR
 +        report = griffe.recommend_bump(old_module, new_module, ignore=["Tool"])
 +    assert report.bump is griffe.Bump.PATCH
-+    assert report.changes == []
++    assert not report.changes
 +
 +
 +def test_ignored_breaking_change_is_excluded() -> None:
@@ -752,7 +752,7 @@ index 0000000..bbaeff5
 +    ):
 +        report = griffe.recommend_bump(old_module, new_module, ignore=["tool"])
 +    assert report.bump is griffe.Bump.PATCH
-+    assert report.breaking == []
++    assert not report.breaking
 +
 +
 +def test_ignore_does_not_match_name_prefix() -> None:
@@ -799,7 +799,7 @@ index 0000000..bbaeff5
 +    new = 'def tool(a) -> int:\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MINOR
-+    assert report.expansions == ["tool"]
++    assert list(report.expansions) == ["tool"]
 +
 +
 +def test_changelog_groups_by_top_level_name() -> None:
@@ -874,7 +874,7 @@ index 0000000..bbaeff5
 +    assert exit_code == 0
 +    payload = json.loads(output)
 +    assert payload["bump"] == "patch"
-+    assert payload["changes"] == []
++    assert not payload["changes"]
 +
 +
 +def test_attribute_gaining_annotation_is_minor_expansion() -> None:
@@ -882,7 +882,7 @@ index 0000000..bbaeff5
 +    new = 'x: int = 1\n\n__all__ = ["x"]\n'
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MINOR
-+    assert report.expansions == ["x"]
++    assert list(report.expansions) == ["x"]
 +
 +
 +def test_nested_containers_compare_more_than_one_level_deep() -> None:
@@ -906,7 +906,7 @@ index 0000000..bbaeff5
 +        'def t(a, *, b=1):\n    """D."""\n\n__all__ = ["t"]\n',
 +    )
 +    assert report.bump is griffe.Bump.MINOR
-+    assert report.expansions == ["t"]
++    assert list(report.expansions) == ["t"]
 +
 +
 +def test_base_added_to_class_that_already_had_one_is_an_expansion() -> None:
@@ -940,7 +940,7 @@ index 0000000..bbaeff5
 +        'def t(a, c=1):\n    """D."""\n\n__all__ = ["t"]\n',
 +    )
 +    assert report.bump is griffe.Bump.MAJOR
-+    assert report.expansions == []
++    assert not report.expansions
 +
 +
 +def test_breaking_object_is_not_also_reported_as_expanded() -> None:
@@ -951,7 +951,7 @@ index 0000000..bbaeff5
 +        'def t(a, /) -> int:\n    """D."""\n\n__all__ = ["t"]\n',
 +    )
 +    assert report.bump is griffe.Bump.MAJOR
-+    assert report.expansions == []
++    assert not report.expansions
 +    assert [c.kind for c in report.changes if c.path == "t"] == [griffe.ChangeKind.BREAKING]
 +
 +
@@ -962,7 +962,7 @@ index 0000000..bbaeff5
 +    )
 +    assert report.bump is griffe.Bump.MAJOR
 +    assert [c.path for c in report.changes if c.path == "t"] == ["t"]
-+    assert report.removals == []
++    assert not report.removals
 +
 +
 +def test_renderers_list_breaking_only_paths() -> None:

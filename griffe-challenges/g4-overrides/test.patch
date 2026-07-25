@@ -1,6 +1,6 @@
 diff --git a/packages/griffelib/tests/test_substitution_check.py b/packages/griffelib/tests/test_substitution_check.py
 new file mode 100644
-index 0000000..5eb14d4
+index 0000000..a3dd72f
 --- /dev/null
 +++ b/packages/griffelib/tests/test_substitution_check.py
 @@ -0,0 +1,614 @@
@@ -35,7 +35,7 @@ index 0000000..5eb14d4
 +            def process(self, data, timeout=5): ...
 +        """,
 +    )
-+    assert issues == []
++    assert not issues
 +
 +
 +def test_no_inheritance_produces_no_issues() -> None:
@@ -48,7 +48,7 @@ index 0000000..5eb14d4
 +            def process(self): ...
 +        """,
 +    )
-+    assert issues == []
++    assert not issues
 +
 +
 +def test_removed_parameter_is_reported() -> None:
@@ -78,7 +78,7 @@ index 0000000..5eb14d4
 +            def process(self, data, **kwargs): ...
 +        """,
 +    )
-+    assert issues == []
++    assert not issues
 +
 +
 +def test_positional_or_keyword_parameter_needs_both_variadics() -> None:
@@ -102,7 +102,7 @@ index 0000000..5eb14d4
 +            def process(self, data, *args, **kwargs): ...
 +        """,
 +    )
-+    assert absorbed == []
++    assert not absorbed
 +
 +
 +def test_removed_positional_parameter_absorbed_by_args_is_compatible() -> None:
@@ -115,7 +115,7 @@ index 0000000..5eb14d4
 +            def process(self, data, /, *args): ...
 +        """,
 +    )
-+    assert issues == []
++    assert not issues
 +
 +
 +def test_added_required_parameter_is_reported() -> None:
@@ -141,7 +141,7 @@ index 0000000..5eb14d4
 +            def process(self, data, mode=None): ...
 +        """,
 +    )
-+    assert issues == []
++    assert not issues
 +
 +
 +def test_lost_default_value_is_reported() -> None:
@@ -236,7 +236,7 @@ index 0000000..5eb14d4
 +            def make(cls, value): ...
 +        """,
 +    )
-+    assert issues == []
++    assert not issues
 +
 +
 +def test_nearest_ancestor_definition_wins() -> None:
@@ -303,7 +303,7 @@ index 0000000..5eb14d4
 +            def __helper(self): ...
 +        """,
 +    )
-+    assert issues == []
++    assert not issues
 +
 +
 +def test_method_overridden_by_attribute_is_kind_change() -> None:
@@ -359,7 +359,7 @@ index 0000000..5eb14d4
 +            option = 2
 +        """,
 +    )
-+    assert issues == []
++    assert not issues
 +
 +
 +def test_unresolvable_bases_are_skipped() -> None:
@@ -371,7 +371,7 @@ index 0000000..5eb14d4
 +            def process(self, data): ...
 +        """,
 +    )
-+    assert issues == []
++    assert not issues
 +
 +
 +def test_class_with_any_unresolved_base_is_skipped() -> None:
@@ -386,7 +386,7 @@ index 0000000..5eb14d4
 +            def process(self, data): ...
 +        """,
 +    )
-+    assert issues == []
++    assert not issues
 +
 +
 +def test_issues_are_sorted_deterministically() -> None:
@@ -515,7 +515,7 @@ index 0000000..5eb14d4
 +        value = 3
 +    """
 +    exit_code, out, _ = _run_overrides(
-+        tmp_path, code, "--json", "--kind", "kind-changed"
++        tmp_path, code, "--json", "--kind", "kind-changed",
 +    )
 +    assert exit_code != 0
 +    payload = json.loads(out)
@@ -611,7 +611,7 @@ index 0000000..5eb14d4
 +        n = 5
 +    """
 +    _, out, _ = _run_overrides(
-+        tmp_path, code, "--kind", "parameter-removed", "--kind", "kind-changed", "--json"
++        tmp_path, code, "--kind", "parameter-removed", "--kind", "kind-changed", "--json",
 +    )
 +    kinds = {entry["kind"] for entry in json.loads(out)}
 +    assert kinds == {
