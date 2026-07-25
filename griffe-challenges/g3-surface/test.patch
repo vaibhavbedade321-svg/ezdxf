@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_exposure_audit.py b/packages/griffelib/tests/test_exposure_audit.py
 new file mode 100644
-index 0000000..11002a9
+index 0000000..a131e85
 --- /dev/null
 +++ b/packages/griffelib/tests/test_exposure_audit.py
-@@ -0,0 +1,629 @@
+@@ -0,0 +1,667 @@
 +"""Tests for the public API surface audit."""
 +
 +from __future__ import annotations
@@ -633,6 +633,44 @@ index 0000000..11002a9
 +    )
 +    leaks = report.issues_of_kind(griffe.SurfaceIssueKind.PRIVATE_LEAK)
 +    assert any(issue.public_path == "audpkg.use" for issue in leaks)
++
++
++NON_LITERAL_DEFAULTS = '''"""Doc."""
++
++
++class _Token:
++    pass
++
++
++token = _Token()
++
++
++def f(items=[token], mapping={"k": token}, members={token}, ok=5):
++    """Doc."""
++'''
++
++
++def test_inspected_defaults_with_non_literal_contents_are_reported() -> None:
++    from griffe import temporary_inspected_package
++
++    with temporary_inspected_package("audnonlit", {"__init__.py": NON_LITERAL_DEFAULTS}) as package:
++        report = griffe.audit_surface(package)
++    paths = {i.public_path for i in report.issues_of_kind(griffe.SurfaceIssueKind.MUTABLE_DEFAULT)}
++    # Inspection reprs these as "[<... object at 0x...>]", which is not
++    # literal-evaluable; the container is still mutable and still counts.
++    assert paths == {"audnonlit.f"}
++
++
++def test_mutable_default_detection_matches_across_agents() -> None:
++    from griffe import temporary_inspected_package
++
++    with temporary_inspected_package("audparity", {"__init__.py": NON_LITERAL_DEFAULTS}) as package:
++        inspected = griffe.audit_surface(package)
++    visited = _audit({"__init__.py": NON_LITERAL_DEFAULTS})
++    inspected_names = {i.public_path.split(".", 1)[1] for i in inspected.issues_of_kind(griffe.SurfaceIssueKind.MUTABLE_DEFAULT)}
++    visited_names = {i.public_path.split(".", 1)[1] for i in visited.issues_of_kind(griffe.SurfaceIssueKind.MUTABLE_DEFAULT)}
++    # "statically parsed and dynamically inspected packages alike"
++    assert inspected_names == visited_names == {"f"}
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..52be181

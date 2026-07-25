@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..e83bf76
+index 0000000..7af8a10
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,1046 @@
+@@ -0,0 +1,1067 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
@@ -1050,6 +1050,27 @@ index 0000000..e83bf76
 +    assert len(again.value) == len(examples.value)
 +    assert _model(parsed) == _model(recomposed)
 +    assert composed == griffe.compose(recomposed, "google")
++
++
++def test_rewrite_source_converts_attribute_docstrings() -> None:
++    code = dedent(
++        '''
++        """Mod doc."""
++
++        x: int = 1
++        """Attribute doc.
++
++        Parameters:
++            a (int): The a.
++        """
++        ''',
++    ).lstrip()
++    with temporary_visited_module(code, docstring_parser=Parser.google) as module:
++        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    compile(result, "<rewritten>", "exec")
++    # Attribute docstrings are members too, not just PEP 257 first statements.
++    assert re.search(r"^Parameters\n-+$", result, flags=re.MULTILINE)
++    assert "Parameters:" not in result
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..106e395
