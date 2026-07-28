@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_agent_parity.py b/packages/griffelib/tests/test_agent_parity.py
 new file mode 100644
-index 0000000..893995d
+index 0000000..a9af284
 --- /dev/null
 +++ b/packages/griffelib/tests/test_agent_parity.py
-@@ -0,0 +1,720 @@
+@@ -0,0 +1,766 @@
 +"""Tests for the static/dynamic divergence report."""
 +
 +from __future__ import annotations
@@ -724,6 +724,52 @@ index 0000000..893995d
 +    exit_code = main(["check", "--json", "-s", str(tmp_path), "jsonpkg"])
 +    capsys.readouterr()
 +    assert exit_code != 0
++
++
++def test_one_function_can_report_several_divergences() -> None:
++    divergences = _divergences(
++        """
++        def deco(f):
++            def inner(b, *, a): ...
++            return inner
++
++        @deco
++        def func(a, b): ...
++        """,
++    )
++    kinds = _kinds(divergences)
++    # A rewritten signature can break in more than one way at once; each
++    # incompatibility is its own record.
++    assert griffe.DivergenceKind.PARAMETER_ORDER in kinds
++    assert griffe.DivergenceKind.PARAMETER_KIND in kinds
++
++
++def test_deeply_nested_classes_compare_recursively() -> None:
++    divergences = _divergences(
++        """
++        class A:
++            class B:
++                class C:
++                    pass
++
++        A.B.C.injected = 1
++        """,
++    )
++    assert any(d.object_path.endswith("A.B.C.injected") for d in divergences)
++
++
++def test_nested_submodule_exports_compare_recursively() -> None:
++    modules = {
++        "__init__.py": '"""Doc."""\nfrom nestexppkg import sub\n',
++        "sub/__init__.py": '"""Doc."""\nfrom nestexppkg.sub import deep\n',
++        "sub/deep.py": '"""Doc."""\n__all__ = ["a"]\n__all__ += [n for n in ("b",)]\n\ndef a(): ...\ndef b(): ...\n',
++    }
++    with temporary_pypackage("nestexppkg", modules) as tmp_package:
++        static, dynamic = griffe.load_both("nestexppkg", search_paths=[tmp_package.tmpdir])
++        divergences = list(griffe.find_divergences(static, dynamic))
++    exports = [d for d in divergences if d.kind is griffe.DivergenceKind.EXPORTS_MISMATCH]
++    # Recursion has to reach a submodule of a submodule, both reached by import.
++    assert any(d.object_path.endswith("sub.deep") for d in exports)
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..cdca388
