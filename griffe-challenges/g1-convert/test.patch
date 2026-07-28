@@ -1,13 +1,14 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..7af8a10
+index 0000000..bb2a1a5
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,1067 @@
+@@ -0,0 +1,1145 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
 +
++import ast
 +import json
 +import re
 +from textwrap import dedent
@@ -443,8 +444,17 @@ index 0000000..7af8a10
 +    code = dedent(REWRITE_CODE)
 +    with temporary_visited_module(code) as module:
 +        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
-+    assert 'r"""Run the thing.' in result
-+    assert "'''Method doc." in result
++    # Prefix and delimiter survive; where the first content character lands
++    # relative to the opening delimiter is the implementation's choice.
++    literals = {
++        node.value
++        for node in ast.walk(ast.parse(result))
++        if isinstance(node, ast.Constant) and isinstance(node.value, str)
++    }
++    assert any("Run the thing." in text for text in literals)
++    assert any("Method doc." in text for text in literals)
++    assert 'r"""' in result
++    assert "'''" in result
 +
 +
 +def _lines_outside_docstrings(source: str) -> list[str]:
@@ -685,17 +695,16 @@ index 0000000..7af8a10
 +
 +
 +def test_cli_convert_check_passes_when_nothing_to_change(tmp_path) -> None:
-+    code = '''
-+"""Package doc.
-+
-+Parameters
-+----------
-+cfg : str
-+    Config path.
-+"""
-+'''
-+    exit_code, _ = _run_convert(tmp_path, code, "-t", "numpy", "--check", "-d", "numpy")
++    # Convert once so the file holds the composer's own canonical output,
++    # then check that same output. Avoids assuming a hand-written fixture
++    # is already byte-for-byte what the composer emits.
++    exit_code, _ = _run_convert(tmp_path, CLI_CODE, "-t", "numpy", "--in-place")
 +    assert exit_code == 0
++    converted = (tmp_path / "cvtpkg" / "__init__.py").read_text(encoding="utf8")
++
++    exit_code, output = _run_convert(tmp_path, converted, "-t", "numpy", "--check", "-d", "numpy")
++    assert exit_code == 0
++    assert output == ""
 +
 +
 +def test_cli_convert_diff_prints_unified_diff(tmp_path) -> None:
@@ -1071,6 +1080,75 @@ index 0000000..7af8a10
 +    # Attribute docstrings are members too, not just PEP 257 first statements.
 +    assert re.search(r"^Parameters\n-+$", result, flags=re.MULTILINE)
 +    assert "Parameters:" not in result
++
++
++def test_rewrite_source_survives_composed_text_holding_the_current_delimiter() -> None:
++    # The docstring is written with escaped quotes, so the *parsed* text really
++    # contains the same triple-quote run that delimits the literal. Composition
++    # carries that run into the output, which the rewriter must still emit as
++    # valid Python.
++    delimiter = chr(34) * 3
++    code = (
++        dedent(
++            '''
++def f(x):
++    """Doc holding ESCQ3 here.
++
++    Args:
++        x (int): The x.
++    """
++''',
++        )
++        .lstrip()
++        .replace("ESCQ3", (chr(92) + chr(34)) * 3)
++    )
++    with temporary_visited_module(code, docstring_parser=Parser.google) as module:
++        assert delimiter in module["f"].docstring.value
++        result = griffe.rewrite_source(code, module, "numpy", source_style="google")
++    compile(result, "<rewritten>", "exec")
++    literals = [
++        node.value
++        for node in ast.walk(ast.parse(result))
++        if isinstance(node, ast.Constant) and isinstance(node.value, str)
++    ]
++    # The colliding run is still part of the docstring text, not stripped to
++    # dodge the collision.
++    assert any(delimiter in literal for literal in literals)
++    assert any("Doc holding" in literal for literal in literals)
++
++
++def test_rewrite_source_rejects_a_target_style_it_cannot_compose() -> None:
++    code = dedent(
++        '''
++        def f(x):
++            """Doc.
++
++            Args:
++                x (int): The x.
++            """
++        ''',
++    ).lstrip()
++    with temporary_visited_module(code, docstring_parser=Parser.google) as module:
++        # A real dialect works, so the rejections below cannot pass vacuously.
++        griffe.rewrite_source(code, module, "numpy", source_style="google")
++        for style in ("fortran", "auto"):
++            with pytest.raises(ValueError):
++                griffe.rewrite_source(code, module, style, source_style="google")
++
++
++def test_cli_convert_rejects_a_target_style_it_cannot_compose(tmp_path) -> None:
++    # A concrete target style runs normally, which anchors the command's
++    # existence so the rejection below cannot pass for the wrong reason.
++    exit_code, _ = _run_convert(tmp_path, CLI_CODE, "-t", "numpy", "--check")
++    assert exit_code != 0
++    # Either rejection mechanism is acceptable: an argument parser that refuses
++    # the value, a nonzero exit, or the composer's own error surfacing.
++    try:
++        exit_code, _ = _run_convert(tmp_path, CLI_CODE, "-t", "fortran", "--check")
++    except (SystemExit, ValueError) as exc:
++        assert not isinstance(exc, SystemExit) or exc.code != 0
++    else:
++        assert exit_code != 0
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..106e395
