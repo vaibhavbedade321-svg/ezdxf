@@ -486,10 +486,10 @@ index 0000000..24fe6fb
 +    return "\n\n".join(blocks)
 diff --git a/packages/griffelib/src/griffe/_internal/docstrings/composers/numpy.py b/packages/griffelib/src/griffe/_internal/docstrings/composers/numpy.py
 new file mode 100644
-index 0000000..3d0a189
+index 0000000..5acbe9e
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/docstrings/composers/numpy.py
-@@ -0,0 +1,159 @@
+@@ -0,0 +1,161 @@
 +# This module defines the composer producing Numpydoc-style docstring text.
 +
 +from __future__ import annotations
@@ -644,9 +644,11 @@ index 0000000..3d0a189
 +                else:
 +                    lines.append(section.value.contents)
 +            else:
-+                directive = str(section.value.kind)
-+                lines = [f".. {directive}::"]
-+                lines.extend(indent_block(section.value.contents, _INDENT))
++                # Numpy expresses an admonition as an underlined heading, which
++                # is what its own parser reads back; a Sphinx directive would
++                # reparse as plain text and break the round trip.
++                title = section.title or str(section.value.kind).replace("-", " ").title()
++                lines = [title, "-" * len(title), section.value.contents]
 +            blocks.append("\n".join(lines))
 +    return "\n\n".join(blocks)
 diff --git a/packages/griffelib/src/griffe/_internal/docstrings/composers/sphinx.py b/packages/griffelib/src/griffe/_internal/docstrings/composers/sphinx.py
@@ -751,10 +753,10 @@ index 0000000..6ee1813
 +    return len(elements) == 1 and not getattr(elements[0], "name", "")
 diff --git a/packages/griffelib/src/griffe/_internal/rewriter.py b/packages/griffelib/src/griffe/_internal/rewriter.py
 new file mode 100644
-index 0000000..bea4426
+index 0000000..3e33e60
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/rewriter.py
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,186 @@
 +# This module rewrites docstrings inside Python source files.
 +# Positions come from the Docstring model; everything outside the
 +# docstring literals is left byte-for-byte untouched.
@@ -811,9 +813,15 @@ index 0000000..bea4426
 +        source_style: The style to parse existing docstrings with.
 +            By default the style is inferred per docstring.
 +
++    Raises:
++        ValueError: When the target style is not a composable dialect.
++
 +    Returns:
 +        The rewritten source code.
 +    """
++    # Reject an unusable target style before touching the source, so the
++    # rejection does not depend on the module happening to hold a docstring.
++    _check_style(style)
 +    lines = source.splitlines(keepends=True)
 +    docstrings = [
 +        docstring
@@ -914,6 +922,20 @@ index 0000000..bea4426
 +    if text.endswith(quote[0]):
 +        text = text[:-1] + escaped
 +    return quote, text
++
++
++def _check_style(style: DocstringStyle | Parser) -> None:
++    """Raise when the given style is not a composable dialect.
++
++    Parameters:
++        style: The target style to validate.
++
++    Raises:
++        ValueError: When the style names no dialect, or names `auto`.
++    """
++    parser = style if isinstance(style, Parser) else Parser(style)
++    if parser is Parser.auto:
++        raise ValueError("Cannot compose docstrings with the 'auto' style.")
 +
 +
 +def _infer_style(docstring: Docstring) -> Parser:

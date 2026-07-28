@@ -186,10 +186,10 @@ index a559e0f..57e287b 100644
      "dynamic_import",
      "find_breaking_changes",
 diff --git a/packages/griffelib/src/griffe/_internal/enumerations.py b/packages/griffelib/src/griffe/_internal/enumerations.py
-index 17e346a..2046b2a 100644
+index 17e346a..3e43e89 100644
 --- a/packages/griffelib/src/griffe/_internal/enumerations.py
 +++ b/packages/griffelib/src/griffe/_internal/enumerations.py
-@@ -150,6 +150,27 @@ class BreakageKind(str, Enum):
+@@ -150,6 +150,29 @@ class BreakageKind(str, Enum):
      """Base class was removed"""
  
  
@@ -212,6 +212,8 @@ index 17e346a..2046b2a 100644
 +    """Overriding method changed the method flavor"""
 +    KIND_CHANGED = "Method and overriding member have different kinds"
 +    """Method and overriding member have different kinds"""
++    SETTER_REMOVED = "Overriding property dropped its setter"
++    """Overriding property dropped its setter"""
 +
 +
  class Parser(str, Enum):
@@ -219,10 +221,10 @@ index 17e346a..2046b2a 100644
  
 diff --git a/packages/griffelib/src/griffe/_internal/overrides.py b/packages/griffelib/src/griffe/_internal/overrides.py
 new file mode 100644
-index 0000000..a2bfe73
+index 0000000..c96ac43
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/overrides.py
-@@ -0,0 +1,327 @@
+@@ -0,0 +1,437 @@
 +# This module checks method overrides for signature compatibility.
 +# A subclass method that cannot be substituted for the method it overrides
 +# breaks callers that hold the parent type.
@@ -252,6 +254,9 @@ index 0000000..a2bfe73
 +        ParameterKind.positional_or_keyword,
 +    },
 +)
++_IMPLICIT_STATICMETHODS = frozenset({"__new__"})
++_IMPLICIT_CLASSMETHODS = frozenset({"__init_subclass__", "__class_getitem__"})
++_FLAVOR_LABELS = frozenset({"staticmethod", "classmethod"})
 +
 +
 +class OverrideIssue:
@@ -323,11 +328,34 @@ index 0000000..a2bfe73
 +
 +
 +def _positional_names(func: Function) -> list[str]:
-+    return [
-+        parameter.name
-+        for parameter in func.parameters
-+        if parameter.kind in _POSITIONAL_KINDS
-+    ]
++    return [parameter.name for parameter in func.parameters if parameter.kind in _POSITIONAL_KINDS]
++
++
++def _positional_parameters(func: Function) -> list:
++    return [parameter for parameter in func.parameters if parameter.kind in _POSITIONAL_KINDS]
++
++
++def _positional_pairs(child: Function, parent: Function) -> dict[str, Any]:
++    """Pair the parent's positional-only parameters with the child's by position.
++
++    A positional-only parameter cannot be named by a caller, so only its
++    position matters and renaming it is compatible. Every other parameter is
++    matched by name.
++
++    Parameters:
++        child: The overriding function.
++        parent: The overridden function.
++
++    Returns:
++        A mapping from parent parameter name to the child parameter at the
++        same positional index, for positional-only parent parameters only.
++    """
++    child_positional = _positional_parameters(child)
++    pairs = {}
++    for index, parameter in enumerate(_positional_parameters(parent)):
++        if parameter.kind is ParameterKind.positional_only and index < len(child_positional):
++            pairs[parameter.name] = child_positional[index]
++    return pairs
 +
 +
 +def _compare_signatures(
@@ -337,6 +365,8 @@ index 0000000..a2bfe73
 +    child_names = {parameter.name for parameter in child.parameters}
 +    child_var_positional = _has_var_positional(child)
 +    child_var_keyword = _has_var_keyword(child)
++    positional_pairs = _positional_pairs(child, parent)
++    paired_child_names = {parameter.name for parameter in positional_pairs.values()}
 +
 +    for parameter in parent.parameters:
 +        if parameter.kind is ParameterKind.var_positional:
@@ -354,7 +384,10 @@ index 0000000..a2bfe73
 +                )
 +            continue
 +
-+        if parameter.name not in child_names:
++        counterpart = positional_pairs.get(parameter.name)
++        if counterpart is None and parameter.name in child_names:
++            counterpart = child.parameters[parameter.name]
++        if counterpart is None:
 +            if parameter.kind is ParameterKind.positional_only:
 +                absorbed = child_var_positional
 +            elif parameter.kind is ParameterKind.keyword_only:
@@ -368,7 +401,7 @@ index 0000000..a2bfe73
 +                )
 +            continue
 +
-+        child_parameter = child.parameters[parameter.name]
++        child_parameter = counterpart
 +        if parameter.kind in _KEYWORD_KINDS and child_parameter.kind is ParameterKind.positional_only:
 +            yield (
 +                OverrideIssueKind.PARAMETER_CHANGED_KIND,
@@ -390,7 +423,7 @@ index 0000000..a2bfe73
 +    for parameter in child.parameters:
 +        if parameter.kind in (ParameterKind.var_positional, ParameterKind.var_keyword):
 +            continue
-+        if parameter.name in parent_names:
++        if parameter.name in parent_names or parameter.name in paired_child_names:
 +            continue
 +        if parameter.default is None:
 +            yield (
@@ -405,10 +438,7 @@ index 0000000..a2bfe73
 +    if common != reordered:
 +        yield (
 +            OverrideIssueKind.PARAMETER_MOVED,
-+            "positional parameters were reordered: "
-+            + ", ".join(common)
-+            + " became "
-+            + ", ".join(reordered),
++            "positional parameters were reordered: " + ", ".join(common) + " became " + ", ".join(reordered),
 +        )
 +
 +
@@ -453,19 +483,108 @@ index 0000000..a2bfe73
 +        return False
 +
 +
++def _iter_inherited_conflicts(cls: Class) -> Iterator[tuple[Object, Object]]:
++    """Yield the pairs a class inherits from two ancestors without redefining.
++
++    When a class inherits the same name from several ancestors, the method
++    resolution order picks one definition and shadows the others. Callers
++    holding a shadowed ancestor's type still expect that ancestor's signature,
++    so the winner must be able to substitute for each definition it shadows.
++
++    Parameters:
++        cls: The class to inspect.
++
++    Yields:
++        Pairs of shadowing and shadowed members.
++    """
++    try:
++        ancestors = cls.mro()
++    except (AliasResolutionError, CyclicAliasError):
++        return
++    definitions: dict[str, list[Object]] = {}
++    for ancestor in ancestors:
++        for name, member in ancestor.members.items():
++            if name in cls.members or member.is_alias:
++                continue
++            if not (member.is_function or member.is_attribute):
++                continue
++            definitions.setdefault(name, []).append(member)  # ty:ignore[invalid-argument-type]
++    for members in definitions.values():
++        winner = members[0]
++        for shadowed in members[1:]:
++            yield winner, shadowed
++
++
++def _check_pair(child: Object, parent: Object) -> Iterator[OverrideIssue]:
++    """Compare one overriding member against the member it overrides.
++
++    Parameters:
++        child: The overriding member.
++        parent: The overridden member.
++
++    Yields:
++        The incompatibilities between the two members.
++    """
++    if child.name.startswith("__") and not child.name.endswith("__"):
++        return
++    if child.is_function is not parent.is_function:
++        yield OverrideIssue(
++            OverrideIssueKind.KIND_CHANGED,
++            child.path,
++            parent.path,
++            details=f"{_member_kind(parent)} became {_member_kind(child)}",
++        )
++        return
++    if not child.is_function:
++        if (
++            "property" in parent.labels
++            and "property" in child.labels
++            and "writable" in parent.labels
++            and "writable" not in child.labels
++        ):
++            yield OverrideIssue(
++                OverrideIssueKind.SETTER_REMOVED,
++                child.path,
++                parent.path,
++                details=f"property {child.name} is read-only now",
++            )
++        return
++    child_flavors = _flavors(child)
++    parent_flavors = _flavors(parent)
++    if child_flavors != parent_flavors:
++        yield OverrideIssue(
++            OverrideIssueKind.FLAVOR_CHANGED,
++            child.path,
++            parent.path,
++            details=(
++                f"{', '.join(sorted(parent_flavors)) or 'regular method'}"
++                f" became {', '.join(sorted(child_flavors)) or 'regular method'}"
++            ),
++        )
++        return
++    implicit = child.name in _IMPLICIT_STATICMETHODS or child.name in _IMPLICIT_CLASSMETHODS
++    skip_first = implicit or not child_flavors or "classmethod" in child_flavors
++    child_view = _without_first_parameter(child) if skip_first else child
++    parent_view = _without_first_parameter(parent) if skip_first else parent
++    for kind, details in _compare_signatures(child_view, parent_view):
++        yield OverrideIssue(kind, child.path, parent.path, details=details)
++
++
 +def check_overrides(package: Module) -> list[OverrideIssue]:
 +    """Check every method override of a package for signature compatibility.
 +
 +    For each class, every method that overrides a method of an ancestor
 +    (following the method resolution order) is compared against the nearest
-+    overridden definition. An override is incompatible when it cannot be
-+    called with the arguments its ancestor accepts: a parameter disappeared
-+    without being absorbed by a variadic, a parameter can no longer be
-+    passed by keyword or positionally, a parameter lost its default value, a
-+    new parameter without default was added, positional parameters were
-+    reordered, or a variadic disappeared. Methods whose names start with a
-+    double underscore, except dunders, are excluded, as are staticmethods
-+    and classmethods compared against a different flavor.
++    overridden definition, and every name inherited from several ancestors
++    without being redefined is compared against the definitions it shadows.
++    An override is incompatible when it cannot be called with the arguments
++    its ancestor accepts: a parameter disappeared without being absorbed by a
++    variadic, a parameter can no longer be passed by keyword or positionally,
++    a parameter lost its default value, a new parameter without default was
++    added, positional parameters were reordered, or a variadic disappeared.
++    Methods whose names start with a double underscore, except dunders, are
++    excluded, as are staticmethods and classmethods compared against a
++    different flavor.
 +
 +    Parameters:
 +        package: The loaded package to check.
@@ -474,46 +593,40 @@ index 0000000..a2bfe73
 +        The incompatibilities found, sorted by method path then kind.
 +    """
 +    issues: list[OverrideIssue] = []
++    seen: set[tuple] = set()
 +    for cls in _iter_classes(package):
 +        if not _bases_resolvable(cls):
 +            continue
-+        for child, parent in _iter_override_pairs(cls):
-+            if child.name.startswith("__") and not child.name.endswith("__"):
-+                continue
-+            if child.is_function is not parent.is_function:
-+                issues.append(
-+                    OverrideIssue(
-+                        OverrideIssueKind.KIND_CHANGED,
-+                        child.path,
-+                        parent.path,
-+                        details=f"{_member_kind(parent)} became {_member_kind(child)}",
-+                    ),
-+                )
-+                continue
-+            if not child.is_function:
-+                continue
-+            child_flavors = {"staticmethod", "classmethod"} & child.labels
-+            parent_flavors = {"staticmethod", "classmethod"} & parent.labels
-+            if child_flavors != parent_flavors:
-+                issues.append(
-+                    OverrideIssue(
-+                        OverrideIssueKind.FLAVOR_CHANGED,
-+                        child.path,
-+                        parent.path,
-+                        details=(
-+                            f"{', '.join(sorted(parent_flavors)) or 'regular method'}"
-+                            f" became {', '.join(sorted(child_flavors)) or 'regular method'}"
-+                        ),
-+                    ),
-+                )
-+                continue
-+            skip_first = not child_flavors or "classmethod" in child_flavors
-+            child_view = _without_first_parameter(child) if skip_first else child
-+            parent_view = _without_first_parameter(parent) if skip_first else parent
-+            for kind, details in _compare_signatures(child_view, parent_view):
-+                issues.append(OverrideIssue(kind, child.path, parent.path, details=details))
++        pairs = list(_iter_override_pairs(cls)) + list(_iter_inherited_conflicts(cls))
++        for child, parent in pairs:
++            for issue in _check_pair(child, parent):
++                key = (issue.kind, issue.method_path, issue.base_path, issue.details)
++                if key in seen:
++                    continue
++                seen.add(key)
++                issues.append(issue)
 +    issues.sort(key=lambda issue: (issue.method_path, issue.kind.name))
 +    return issues
++
++
++def _flavors(func: Object) -> set[str]:
++    """Return the flavor labels of a method, including the implicit ones.
++
++    Python makes `__new__` a staticmethod and `__init_subclass__` and
++    `__class_getitem__` classmethods whether or not they carry the decorator,
++    so the decorator alone must not be read as a flavor change.
++
++    Parameters:
++        func: The method to inspect.
++
++    Returns:
++        The flavor labels, at most one of which is present.
++    """
++    if func.name in _IMPLICIT_STATICMETHODS:
++        return {"staticmethod"}
++    if func.name in _IMPLICIT_CLASSMETHODS:
++        return {"classmethod"}
++    return set(_FLAVOR_LABELS & func.labels)
 +
 +
 +def _member_kind(obj: Object) -> str:
@@ -522,7 +635,6 @@ index 0000000..a2bfe73
 +    if "property" in obj.labels:
 +        return "a property"
 +    return "an attribute"
-+
 +
 +
 +class _FunctionView:

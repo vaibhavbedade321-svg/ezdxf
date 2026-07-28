@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_substitution_check.py b/packages/griffelib/tests/test_substitution_check.py
 new file mode 100644
-index 0000000..a3dd72f
+index 0000000..3403704
 --- /dev/null
 +++ b/packages/griffelib/tests/test_substitution_check.py
-@@ -0,0 +1,614 @@
+@@ -0,0 +1,877 @@
 +"""Tests for the override signature compatibility check."""
 +
 +from __future__ import annotations
@@ -618,6 +618,269 @@ index 0000000..a3dd72f
 +        griffe.OverrideIssueKind.PARAMETER_REMOVED.value,
 +        griffe.OverrideIssueKind.KIND_CHANGED.value,
 +    }
++
++
++def test_renamed_positional_only_parameter_is_compatible() -> None:
++    # A positional-only parameter cannot be named by a caller, so only its
++    # position is part of the contract.
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data, /, timeout=5): ...
++
++        class Child(Base):
++            def process(self, payload, /, timeout=5): ...
++        """,
++    )
++    assert not issues
++
++
++def test_renamed_keyword_capable_parameter_is_still_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data, timeout=5): ...
++
++        class Child(Base):
++            def process(self, payload, timeout=5): ...
++        """,
++    )
++    assert _kinds(issues) == {
++        griffe.OverrideIssueKind.PARAMETER_REMOVED,
++        griffe.OverrideIssueKind.PARAMETER_ADDED_REQUIRED,
++    }
++
++
++def test_dropped_positional_only_parameter_is_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data, extra, /): ...
++
++        class Child(Base):
++            def process(self, data, /): ...
++        """,
++    )
++    assert len(issues) == 1
++    assert issues[0].kind is griffe.OverrideIssueKind.PARAMETER_REMOVED
++
++
++def test_positional_only_parameter_may_become_keyword_capable() -> None:
++    # Accepting more ways to pass an argument never breaks a caller.
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data, /): ...
++
++        class Child(Base):
++            def process(self, data): ...
++        """,
++    )
++    assert not issues
++
++
++def test_positional_only_default_is_tracked_across_a_rename() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def process(self, data=1, /): ...
++
++        class Child(Base):
++            def process(self, payload, /): ...
++        """,
++    )
++    assert len(issues) == 1
++    assert issues[0].kind is griffe.OverrideIssueKind.PARAMETER_NOW_REQUIRED
++
++
++def test_decorating_new_as_staticmethod_is_not_a_flavor_change() -> None:
++    # Python makes `__new__` a staticmethod with or without the decorator.
++    issues = _issues(
++        """
++        class Base:
++            def __new__(cls, data): ...
++
++        class Child(Base):
++            @staticmethod
++            def __new__(cls, data): ...
++        """,
++    )
++    assert not issues
++
++
++def test_decorating_implicit_classmethods_is_not_a_flavor_change() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def __init_subclass__(cls, **kwargs): ...
++            def __class_getitem__(cls, item): ...
++
++        class Child(Base):
++            @classmethod
++            def __init_subclass__(cls, **kwargs): ...
++            @classmethod
++            def __class_getitem__(cls, item): ...
++        """,
++    )
++    assert not issues
++
++
++def test_implicit_first_parameter_of_new_is_ignored() -> None:
++    # The added parameter is `data`, not the implicit first one.
++    issues = _issues(
++        """
++        class Base:
++            def __new__(cls): ...
++
++        class Child(Base):
++            def __new__(cls, data): ...
++        """,
++    )
++    assert len(issues) == 1
++    assert issues[0].kind is griffe.OverrideIssueKind.PARAMETER_ADDED_REQUIRED
++    assert "data" in issues[0].explain()
++
++
++def test_flavor_change_on_an_ordinary_dunder_is_still_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            def __call__(self, data): ...
++
++        class Child(Base):
++            @staticmethod
++            def __call__(data): ...
++        """,
++    )
++    assert griffe.OverrideIssueKind.FLAVOR_CHANGED in _kinds(issues)
++
++
++def test_read_only_property_overriding_a_writable_one_is_reported() -> None:
++    issues = _issues(
++        """
++        class Base:
++            @property
++            def value(self): ...
++            @value.setter
++            def value(self, new): ...
++
++        class Child(Base):
++            @property
++            def value(self): ...
++        """,
++    )
++    assert len(issues) == 1
++    issue = issues[0]
++    assert issue.kind is griffe.OverrideIssueKind.SETTER_REMOVED
++    assert issue.method_path == "ovrpkg.Child.value"
++    assert issue.base_path == "ovrpkg.Base.value"
++
++
++def test_writable_property_overriding_a_writable_one_is_compatible() -> None:
++    issues = _issues(
++        """
++        class Base:
++            @property
++            def value(self): ...
++            @value.setter
++            def value(self, new): ...
++
++        class Child(Base):
++            @property
++            def value(self): ...
++            @value.setter
++            def value(self, new): ...
++        """,
++    )
++    assert not issues
++
++
++def test_property_gaining_a_setter_is_compatible() -> None:
++    issues = _issues(
++        """
++        class Base:
++            @property
++            def value(self): ...
++
++        class Child(Base):
++            @property
++            def value(self): ...
++            @value.setter
++            def value(self, new): ...
++        """,
++    )
++    assert not issues
++
++
++def test_inherited_definition_shadowing_a_sibling_is_reported() -> None:
++    # `Both` inherits `process` from `First`, so callers holding a `Second`
++    # get a signature that cannot accept what `Second.process` accepts.
++    issues = _issues(
++        """
++        class First:
++            def process(self, data, extra): ...
++
++        class Second:
++            def process(self, data): ...
++
++        class Both(First, Second): ...
++        """,
++    )
++    assert len(issues) == 1
++    issue = issues[0]
++    assert issue.kind is griffe.OverrideIssueKind.PARAMETER_ADDED_REQUIRED
++    assert issue.method_path == "ovrpkg.First.process"
++    assert issue.base_path == "ovrpkg.Second.process"
++
++
++def test_compatible_sibling_definitions_produce_no_issue() -> None:
++    issues = _issues(
++        """
++        class First:
++            def process(self, data): ...
++
++        class Second:
++            def process(self, data): ...
++
++        class Both(First, Second): ...
++        """,
++    )
++    assert not issues
++
++
++def test_same_inherited_conflict_is_reported_once() -> None:
++    issues = _issues(
++        """
++        class First:
++            def process(self, data, extra): ...
++
++        class Second:
++            def process(self, data): ...
++
++        class Both(First, Second): ...
++
++        class AlsoBoth(First, Second): ...
++        """,
++    )
++    assert len(issues) == 1
++
++
++def test_redefining_the_member_replaces_the_inherited_conflict() -> None:
++    # `Both` defines `process` itself, so only the nearest ancestor
++    # definition is compared and no shadowing pair is left.
++    issues = _issues(
++        """
++        class First:
++            def process(self, data, extra): ...
++
++        class Second:
++            def process(self, data): ...
++
++        class Both(First, Second):
++            def process(self, data, extra): ...
++        """,
++    )
++    assert not issues
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..379056a

@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..bb2a1a5
+index 0000000..4b28d4e
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,1145 @@
+@@ -0,0 +1,1183 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
@@ -1149,6 +1149,44 @@ index 0000000..bb2a1a5
 +        assert not isinstance(exc, SystemExit) or exc.code != 0
 +    else:
 +        assert exit_code != 0
++
++
++def test_numpy_admonition_survives_numpy_round_trip() -> None:
++    # Numpy expresses admonitions as underlined headings, so one must survive
++    # the same-dialect round trip like any other section.
++    source = dedent(
++        """
++        Summary.
++
++        Note
++        ----
++        A note here.
++
++        Parameters
++        ----------
++        x : int
++            The X.
++        """,
++    )
++    sections = _sections(source, "numpy")
++    assert any(section.kind.value == "admonition" for section in sections)
++    composed = griffe.compose(sections, "numpy")
++    reparsed = Docstring(composed).parse("numpy", warnings=False)
++    assert _model(sections) == _model(reparsed)
++    assert griffe.compose(reparsed, "numpy") == composed
++    inferred, _ = infer_docstring_style(Docstring(composed))
++    assert inferred is Parser.numpy
++
++
++def test_rewrite_source_rejects_a_bad_style_even_without_docstrings() -> None:
++    # The rejection is a property of the call, not of whether the module
++    # happens to hold a docstring to compose.
++    code = "x = 1\n"
++    with temporary_visited_module(code) as module:
++        assert griffe.rewrite_source(code, module, "numpy") == code
++        for style in ("fortran", "auto"):
++            with pytest.raises(ValueError):
++                griffe.rewrite_source(code, module, style)
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..106e395
