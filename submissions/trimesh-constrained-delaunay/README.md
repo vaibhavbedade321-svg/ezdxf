@@ -21,8 +21,8 @@
 | Patch | NBNCC lines |
 | --- | --- |
 | `solution.patch` | 486 |
-| `test.patch` | 473 |
-| combined | 959 |
+| `test.patch` | 561 |
+| combined | 1047 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -32,8 +32,8 @@ Fresh worktree at the base commit, patches applied with `git apply`:
 
 | State | `./test.sh base` | `./test.sh new` |
 | --- | --- | --- |
-| `test.patch` only | 61 passed | 27 failed |
-| `test.patch` + `solution.patch` | 61 passed | 27 passed |
+| `test.patch` only | 61 passed | 29 failed |
+| `test.patch` + `solution.patch` | 61 passed | 29 passed |
 
 Both patches pass `git apply --check`. The new suite runs in under 3s, the
 base suite in about 30s.
@@ -139,3 +139,25 @@ The reference triangulates all fourteen at every scale, and a sweep of 616
 further valid polygons drawn the same way passes with no failures. The
 reference's own flip loop now raises rather than giving up quietly if it ever
 fails to place a segment, so a stall can never be mistaken for a result.
+
+## Concave and off-origin coverage
+
+A second adjudication found a candidate failing two more prompt-required
+cases which the suite never reached.
+
+`test_concave_polygons` covers the first: forty-one valid simple concave
+polygons with fractional coordinates, including the reported
+`Polygon([(8.467,0.103),(7.625,3.444),(2.417,-9.895),(4.997,-3.292)])`, each
+run at two scales. These are everyday shapes where a reflex corner puts one
+vertex inside the hull of the others.
+
+`test_refinement_far_from_origin` covers the second: a U-shape, an L-shape and
+a square, each translated by nothing, a thousand, a million and ten million,
+against four quality targets. Every corner in those shapes is a right angle or
+wider, so the targets are reachable without moving the boundary, and a run
+which raises has a real defect rather than an impossible request. The gap
+between neighbouring floats grows with the coordinates, so a vertex placed
+half way along an edge has to land somewhere new even a long way out.
+
+The reference passes all forty-one concave polygons at both scales and all
+forty-eight refinement combinations.
