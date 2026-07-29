@@ -11,8 +11,8 @@
 
 ## Files
 
-- `problem.md` — problem description, 175 words, ready to paste
-- `test.patch` — `test.sh` + `tests/test_delaunay_7aa206.py`
+- `problem.md` — problem description, 189 words, ready to paste
+- `test.patch` — `test.sh` + `tests/test_delaunay_fe0bc1.py`
 - `solution.patch` — `trimesh/triangulation.py` + `trimesh/creation.py` wiring
 - `Dockerfile` — build environment
 
@@ -21,8 +21,8 @@
 | Patch | NBNCC lines |
 | --- | --- |
 | `solution.patch` | 454 |
-| `test.patch` | 381 |
-| combined | 835 |
+| `test.patch` | 370 |
+| combined | 824 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -81,9 +81,13 @@ of quality targets by the other engines.
   engine selection is therefore exercised purely through the public
   `triangulate_polygon` call.
 - The test file carries an unpredictable suffix,
-  `tests/test_delaunay_7aa206.py`, so an implementer cannot collide with it.
-- The description states the accepted `min_angle` range and that a zero-area
-  polygon yields no triangles.
+  `tests/test_delaunay_fe0bc1.py`, so an implementer cannot collide with it.
+- The description states the accepted `min_angle` range, that a zero-area
+  polygon yields no triangles, and that a coordinate repeated within a ring
+  counts as one vertex.
+- Every assertion in the suite maps to a clause of the description. The one
+  bound that did not (a hard-coded longest-edge limit on a strip polygon) has
+  been dropped in favour of the shared invariant check.
 - The Dockerfile pins every dependency and performs no project install; the
   package is imported from `/app`. Verified in a clean virtualenv holding only
   those pins.
