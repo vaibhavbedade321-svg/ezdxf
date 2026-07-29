@@ -55,10 +55,10 @@ index 00000000..0bb0241f
 +exit $?
 diff --git a/tests/test_delaunay_fe0bc1.py b/tests/test_delaunay_fe0bc1.py
 new file mode 100644
-index 00000000..bba0ae64
+index 00000000..606a1739
 --- /dev/null
 +++ b/tests/test_delaunay_fe0bc1.py
-@@ -0,0 +1,464 @@
+@@ -0,0 +1,486 @@
 +"""
 +Tests for the built-in constrained Delaunay triangulation engine.
 +"""
@@ -105,10 +105,26 @@ index 00000000..bba0ae64
 +
 +# Setup for a process where none of the optional packages can be imported or
 +# even detected, so the engine has to stand on the required dependencies.
++# Importing is blocked at `__import__`, while the `sys.modules` entries are
++# what make `importlib.util.find_spec` report the packages as missing.
 +ISOLATED = '''
++import builtins
 +import sys
 +
-+for name in ("mapbox_earcut", "manifold3d", "triangle", "scipy"):
++BLOCKED = ("mapbox_earcut", "manifold3d", "triangle", "scipy")
++
++_real_import = builtins.__import__
++
++
++def _blocked_import(name, *args, **kwargs):
++    if name.split(".")[0] in BLOCKED:
++        raise ModuleNotFoundError("No module named " + repr(name), name=name)
++    return _real_import(name, *args, **kwargs)
++
++
++builtins.__import__ = _blocked_import
++
++for name in BLOCKED:
 +    sys.modules[name] = None
 +
 +import numpy as np
@@ -462,20 +478,26 @@ index 00000000..bba0ae64
 +                    polygon, engine="delaunay", **kwargs
 +                )
 +
-+        # a quality target cannot be honoured without adding vertices
-+        with self.assertRaises(ValueError):
-+            g.trimesh.creation.triangulate_polygon(
-+                polygon, engine="delaunay", min_angle=25.0, force_vertices=True
-+            )
++        # neither target can be honoured without adding vertices
++        for kwargs in [{"min_angle": 25.0}, {"max_area": 1.0}]:
++            with self.assertRaises(ValueError):
++                g.trimesh.creation.triangulate_polygon(
++                    polygon, engine="delaunay", force_vertices=True, **kwargs
++                )
 +
 +    def test_quality_needs_the_engine(self):
 +        # the other engines have no way to honour a quality target
 +        polygon = g.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
 +        for engine in ["earcut", "manifold", "triangle"]:
-+            with self.assertRaises(ValueError):
-+                g.trimesh.creation.triangulate_polygon(
-+                    polygon, engine=engine, min_angle=20.0
-+                )
++            for kwargs in [
++                {"min_angle": 20.0},
++                {"max_area": 1.0},
++                {"min_angle": 20.0, "max_area": 1.0},
++            ]:
++                with self.assertRaises(ValueError):
++                    g.trimesh.creation.triangulate_polygon(
++                        polygon, engine=engine, **kwargs
++                    )
 +
 +    def test_refined_boundary_is_preserved(self):
 +        # refinement may split a ring segment but never move the boundary

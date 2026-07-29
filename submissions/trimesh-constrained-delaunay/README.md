@@ -21,8 +21,8 @@
 | Patch | NBNCC lines |
 | --- | --- |
 | `solution.patch` | 454 |
-| `test.patch` | 370 |
-| combined | 824 |
+| `test.patch` | 384 |
+| combined | 838 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -75,11 +75,15 @@ of quality targets by the other engines.
 ## Review responses
 
 - The engine-availability test no longer touches `trimesh.creation._engines`.
-  Both isolation tests now run in a subprocess which sets
-  `sys.modules[name] = None` for the optional packages, which makes
-  `importlib.util.find_spec` return None *and* makes `import` raise. Automatic
-  engine selection is therefore exercised purely through the public
-  `triangulate_polygon` call.
+  Both isolation tests run in a subprocess which replaces `builtins.__import__`
+  so the optional packages raise `ModuleNotFoundError`, and sets
+  `sys.modules[name] = None` so `importlib.util.find_spec` reports them as
+  missing. Automatic engine selection is therefore exercised purely through the
+  public `triangulate_polygon` call. Verified directly: `from scipy.spatial
+  import Delaunay` and `import mapbox_earcut` both exit non-zero inside the
+  subprocess, while `has_module("mapbox_earcut")` returns False.
+- Both quality targets are covered for rejection by the other engines and for
+  rejection when paired with `force_vertices`.
 - The test file carries an unpredictable suffix,
   `tests/test_delaunay_fe0bc1.py`, so an implementer cannot collide with it.
 - The description states the accepted `min_angle` range, that a zero-area
