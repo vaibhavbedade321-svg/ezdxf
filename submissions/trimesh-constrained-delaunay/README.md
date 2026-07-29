@@ -11,7 +11,7 @@
 
 ## Files
 
-- `problem.md` — problem description, 187 words, ready to paste
+- `problem.md` — problem description, 195 words, ready to paste
 - `test.patch` — `test.sh` + `tests/test_delaunay_fe0bc1.py`
 - `solution.patch` — `trimesh/triangulation.py` + `trimesh/creation.py` wiring
 - `Dockerfile` — build environment
