@@ -1,0 +1,409 @@
+diff --git a/test.sh b/test.sh
+new file mode 100755
+index 00000000..80081269
+--- /dev/null
++++ b/test.sh
+@@ -0,0 +1,49 @@
++#!/usr/bin/env bash
++# Test runner for the triangulation engine work.
++#
++# Usage:
++#   ./test.sh [--output_path <junit.xml>] <base|new>
++#
++#   base  existing tests covering polygon triangulation and everything
++#         downstream of it, which must pass before and after the change.
++#   new   tests for the built-in triangulation engine.
++set -uo pipefail
++
++cd "$(dirname "$0")"
++
++OUTPUT_PATH=""
++if [ "${1:-}" = "--output_path" ]; then
++  OUTPUT_PATH="$2"
++  shift 2
++fi
++
++MODE="${1:-new}"
++
++if [ -z "$OUTPUT_PATH" ]; then
++  OUTPUT_PATH="$(mktemp -d)/results.xml"
++fi
++
++case "$MODE" in
++  base)
++    # every existing test which touches `triangulate_polygon` or consumes
++    # the faces it returns
++    TARGETS=(
++      tests/test_creation.py
++      tests/test_extrude.py
++      tests/test_polygons.py
++      tests/test_triangles.py
++      tests/test_paths.py
++      tests/test_section.py
++    )
++    ;;
++  new)
++    TARGETS=(tests/test_delaunay.py)
++    ;;
++  *)
++    echo "unknown mode: $MODE (expected base or new)" >&2
++    exit 2
++    ;;
++esac
++
++python -m pytest "${TARGETS[@]}" -v -p no:randomly --junitxml="$OUTPUT_PATH"
++exit $?
+diff --git a/tests/test_delaunay.py b/tests/test_delaunay.py
+new file mode 100644
+index 00000000..47528b1b
+--- /dev/null
++++ b/tests/test_delaunay.py
+@@ -0,0 +1,348 @@
++"""
++Tests for the built-in constrained Delaunay triangulation engine.
++"""
++
++import subprocess
++import sys
++import unittest
++
++import numpy as np
++
++try:
++    from . import generic as g
++except BaseException:
++    import generic as g
++
++
++def rings(polygon):
++    """Exterior ring first, then every interior ring."""
++    out = [np.array(polygon.exterior.coords, dtype=np.float64)]
++    out.extend(np.array(i.coords, dtype=np.float64) for i in polygon.interiors)
++    return out
++
++
++def signed_area(triangles):
++    """Twice the signed area of every (n, 3, 2) triangle."""
++    ab = triangles[:, 1] - triangles[:, 0]
++    ac = triangles[:, 2] - triangles[:, 0]
++    return (ab[:, 0] * ac[:, 1] - ab[:, 1] * ac[:, 0]) / 2.0
++
++
++def in_circle(a, b, c, d):
++    """Positive when `d` is inside the circumcircle of counter-clockwise `a, b, c`."""
++    ad, bd, cd = a - d, b - d, c - d
++    return (
++        (ad**2).sum() * (bd[0] * cd[1] - cd[0] * bd[1])
++        - (bd**2).sum() * (ad[0] * cd[1] - cd[0] * ad[1])
++        + (cd**2).sum() * (ad[0] * bd[1] - bd[0] * ad[1])
++    )
++
++
++def key_of(point):
++    return (round(float(point[0]), 9), round(float(point[1]), 9))
++
++
++class DelaunayTest(g.unittest.TestCase):
++    def triangulate(self, polygon):
++        return g.trimesh.creation.triangulate_polygon(polygon, engine="delaunay")
++
++    def check(self, polygon, expect_faces=True):
++        """
++        Run every invariant the triangulation has to hold and return
++        the vertices and faces so a caller can check more.
++        """
++        vertices, faces = self.triangulate(polygon)
++        vertices = np.asarray(vertices, dtype=np.float64)
++        faces = np.asarray(faces, dtype=np.int64)
++
++        if not expect_faces:
++            assert len(faces) == 0
++            return vertices, faces
++
++        assert len(faces) > 0
++        assert faces.shape[1] == 3
++        assert faces.min() >= 0
++        assert faces.max() < len(vertices)
++
++        triangles = vertices[faces]
++        area = signed_area(triangles)
++
++        # every face is wound counter-clockwise and has real area
++        assert area.min() > 0.0
++        # the faces exactly cover the polygon
++        assert g.np.isclose(area.sum(), polygon.area, rtol=1e-9, atol=1e-9)
++
++        # the vertices are exactly the ring vertices, nothing added or dropped
++        want = set()
++        for ring in rings(polygon):
++            want.update(key_of(p) for p in ring)
++        got = [key_of(p) for p in vertices]
++        assert len(got) == len(set(got))
++        assert set(got) == want
++        # and every one of them is used by at least one face
++        assert len(set(faces.ravel().tolist())) == len(want)
++
++        # a triangulation which adds no vertices always has this many faces
++        holes = len(polygon.interiors)
++        assert len(faces) == len(want) + 2 * holes - 2
++
++        # no edge may be shared by more than two faces
++        index = {key: i for i, key in enumerate(got)}
++        used = {}
++        for a, b, c in faces:
++            for u, v in ((a, b), (b, c), (c, a)):
++                edge = (min(u, v), max(u, v))
++                used[edge] = used.get(edge, 0) + 1
++        assert max(used.values()) <= 2
++
++        # every ring segment survives as an edge of the triangulation
++        fixed = set()
++        for ring in rings(polygon):
++            walk = [index[key_of(p)] for p in ring]
++            for u, v in zip(walk[:-1], walk[1:]):
++                if u == v:
++                    continue
++                edge = (min(u, v), max(u, v))
++                fixed.add(edge)
++                assert edge in used, "ring segment is missing"
++        # ring segments are on the boundary of the covered area or between
++        # the inside and a hole, so they are used exactly once
++        for edge in fixed:
++            assert used[edge] == 1
++
++        # every edge which isn't a ring segment has to be locally Delaunay
++        apex = {}
++        for a, b, c in faces:
++            for u, v, o in ((a, b, c), (b, c, a), (c, a, b)):
++                apex[(u, v)] = o
++        scale = max(1.0, float(np.abs(vertices).max())) ** 4
++        for (u, v), near in apex.items():
++            far = apex.get((v, u))
++            if far is None or (min(u, v), max(u, v)) in fixed:
++                continue
++            value = in_circle(vertices[u], vertices[v], vertices[near], vertices[far])
++            assert value <= 1e-9 * scale, "edge is not locally Delaunay"
++
++        return vertices, faces
++
++    def test_convex(self):
++        for polygon in [
++            g.Polygon([(0, 0), (1, 0), (1, 1), (0, 1)]),
++            g.Polygon([(0, 0), (4, 0), (5, 3)]),
++            g.Polygon([(0, 0), (10, 0), (10, 0.01), (0, 0.01)]),
++            g.Polygon([(0, 0), (1e6, 0), (1e6, 1e6), (0, 1e6)]),
++            g.Polygon([(0, 0), (1e-4, 0), (1e-4, 1e-4), (0, 1e-4)]),
++        ]:
++            self.check(polygon)
++
++    def test_regular_polygons(self):
++        # every vertex of a regular polygon sits on one circle, which is the
++        # worst case for the circumcircle test
++        for count in [3, 4, 5, 8, 17, 64]:
++            angles = np.linspace(0.0, np.pi * 2, count, endpoint=False)
++            polygon = g.Polygon(np.column_stack([np.cos(angles), np.sin(angles)]))
++            _, faces = self.check(polygon)
++            assert len(faces) == count - 2
++
++    def test_concave(self):
++        star = []
++        for i, angle in enumerate(np.linspace(0.0, np.pi * 2, 20, endpoint=False)):
++            radius = 5.0 if i % 2 == 0 else 2.0
++            star.append((np.cos(angle) * radius, np.sin(angle) * radius))
++
++        teeth = [(0, 0), (6, 0), (6, 5)]
++        for i in range(5, -1, -1):
++            teeth += [(i + 0.75, 5), (i + 0.75, 1), (i + 0.25, 1), (i + 0.25, 5)]
++        teeth += [(0, 5)]
++
++        for polygon in [
++            g.Polygon([(0, 0), (3, 0), (3, 1), (1, 1), (1, 3), (0, 3)]),
++            g.Polygon(star),
++            g.Polygon(teeth),
++        ]:
++            assert polygon.is_valid
++            self.check(polygon)
++
++    def test_holes(self):
++        square = [(0, 0), (9, 0), (9, 9), (0, 9)]
++        grid = [
++            [
++                (1 + 3 * i, 1 + 3 * j),
++                (2 + 3 * i, 1 + 3 * j),
++                (2 + 3 * i, 2 + 3 * j),
++                (1 + 3 * i, 2 + 3 * j),
++            ]
++            for i in range(3)
++            for j in range(3)
++        ]
++        for holes in [grid[:1], grid[:4], grid]:
++            polygon = g.Polygon(square, holes)
++            assert polygon.is_valid
++            vertices, faces = self.check(polygon)
++
++            # nothing may be triangulated inside a hole
++            centroids = vertices[faces].mean(axis=1)
++            for hole in holes:
++                inside = g.Polygon(hole)
++                assert not any(inside.contains(g.Point(c)) for c in centroids)
++
++    def test_annulus(self):
++        polygon = g.Point(5, 5).buffer(5.0).difference(g.Point(5, 5).buffer(2.0))
++        assert len(polygon.interiors) == 1
++        self.check(polygon)
++
++    def test_thin_hole(self):
++        polygon = g.Polygon(
++            [(0, 0), (20, 0), (20, 20), (0, 20)],
++            [
++                [(2, 2), (2, 18), (2.1, 18), (2.1, 2)],
++                [(5, 5), (5, 15), (5.05, 15), (5.05, 5)],
++            ],
++        )
++        assert polygon.is_valid
++        self.check(polygon)
++
++    def test_collinear(self):
++        # extra vertices in the middle of a straight edge still have to be used
++        polygon = g.Polygon([(0, 0), (1, 0), (2, 0), (2, 2), (1, 2), (0, 2)])
++        _, faces = self.check(polygon)
++        assert len(faces) == 4
++
++    def test_winding_independent(self):
++        # shapely keeps the ring order it was given, and both have to work
++        forward = [(0, 0), (4, 0), (4, 4), (0, 4)]
++        holes = [[(1, 1), (1, 2), (2, 2), (2, 1)]]
++        first = self.check(g.Polygon(forward, holes))[1]
++        second = self.check(g.Polygon(forward[::-1], [holes[0][::-1]]))[1]
++        assert len(first) == len(second)
++
++    def test_duplicate_points(self):
++        # a repeated vertex is not a new vertex
++        polygon = g.Polygon([(0, 0), (1, 0), (1, 0), (1, 1), (0, 1), (0, 1)])
++        vertices, faces = self.check(polygon)
++        assert len(vertices) == 4
++        assert len(faces) == 2
++
++    def test_degenerate(self):
++        # nothing with any area to trianglulate
++        for coords in [
++            [(0, 0), (1, 0), (2, 0), (3, 0)],
++            [(0, 0), (1, 1), (2, 2)],
++        ]:
++            _, faces = g.trimesh.creation.triangulate_polygon(
++                g.Polygon(coords), engine="delaunay"
++            )
++            assert len(np.asarray(faces)) == 0
++
++    def test_real_geometry(self):
++        for name in ["125_cycloidal.DXF", "wrench.dxf", "sliding-base.dxf"]:
++            path = g.get_mesh(g.os.path.join("2D", name))
++            for polygon in path.polygons_full[:2]:
++                if not polygon.is_valid:
++                    continue
++                self.check(polygon)
++
++    def test_quality_beats_ear_clipping(self):
++        # a fan of thin triangles is a valid triangulation but not a Delaunay
++        # one, so the smallest angle has to come out better than the naive
++        # triangulation of the same polygon
++        coords = [(0, 0), (4, 0), (8, 0), (12, 0), (12, 1), (8, 1), (4, 1), (0, 1)]
++        polygon = g.Polygon(coords)
++        vertices, faces = self.check(polygon)
++
++        triangles = vertices[faces]
++        edges = np.array(
++            [
++                np.linalg.norm(triangles[:, 1] - triangles[:, 0], axis=1),
++                np.linalg.norm(triangles[:, 2] - triangles[:, 1], axis=1),
++                np.linalg.norm(triangles[:, 0] - triangles[:, 2], axis=1),
++            ]
++        ).T
++        longest = edges.max(axis=1)
++        # a Delaunay triangulation of this polygon never spans the whole
++        # length of the strip
++        assert longest.max() < 11.0
++
++    def test_extrude(self):
++        polygon = g.Polygon(
++            [(0, 0), (4, 0), (4, 4), (0, 4)], [[(1, 1), (1, 2), (2, 2), (2, 1)]]
++        )
++        mesh = g.trimesh.creation.extrude_polygon(polygon, height=2.0, engine="delaunay")
++        assert mesh.is_watertight
++        assert mesh.is_volume
++        assert g.np.isclose(mesh.volume, polygon.area * 2.0)
++
++    def test_engine_is_always_available(self):
++        # with none of the optional packages installed the built-in engine
++        # is the one which gets picked, rather than raising
++        polygon = g.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
++        patched = [
++            (name, False if name in ("earcut", "manifold", "triangle") else available)
++            for name, available in g.trimesh.creation._engines
++        ]
++        original = g.trimesh.creation._engines
++        try:
++            g.trimesh.creation._engines = patched
++            _, faces = g.trimesh.creation.triangulate_polygon(polygon)
++        finally:
++            g.trimesh.creation._engines = original
++        assert len(np.asarray(faces)) == 2
++
++    def test_no_optional_dependencies(self):
++        # the engine has to run with nothing but the required dependencies,
++        # so check it in a process where the optional ones cannot be imported
++        script = """
++import importlib.abc, importlib.machinery, sys
++
++BLOCKED = ("mapbox_earcut", "manifold3d", "triangle", "scipy")
++
++class Loader(importlib.abc.Loader):
++    def create_module(self, spec):
++        raise ImportError(spec.name)
++    def exec_module(self, module):
++        raise ImportError("blocked")
++
++class Finder(importlib.abc.MetaPathFinder):
++    def find_spec(self, name, path=None, target=None):
++        if name.split(".")[0] in BLOCKED:
++            return importlib.machinery.ModuleSpec(name, Loader())
++        return None
++
++sys.meta_path.insert(0, Finder())
++for name in list(sys.modules):
++    if name.split(".")[0] in BLOCKED:
++        del sys.modules[name]
++
++import numpy as np
++from shapely.geometry import Polygon
++import trimesh
++
++for name in BLOCKED:
++    try:
++        __import__(name)
++        raise AssertionError(name + " was importable")
++    except ImportError:
++        pass
++
++polygon = Polygon([(0, 0), (4, 0), (4, 4), (0, 4)], [[(1, 1), (1, 2), (2, 2), (2, 1)]])
++vertices, faces = trimesh.creation.triangulate_polygon(polygon, engine="delaunay")
++triangles = np.asarray(vertices)[np.asarray(faces)]
++ab = triangles[:, 1] - triangles[:, 0]
++ac = triangles[:, 2] - triangles[:, 0]
++area = ((ab[:, 0] * ac[:, 1] - ab[:, 1] * ac[:, 0]) / 2.0).sum()
++assert abs(area - polygon.area) < 1e-9, area
++print("OK", len(faces))
++"""
++        result = subprocess.run(
++            [sys.executable, "-c", script],
++            capture_output=True,
++            text=True,
++            cwd=g.os.path.dirname(g.os.path.dirname(g.trimesh.__file__)),
++        )
++        assert result.returncode == 0, result.stderr
++        assert "OK" in result.stdout
++
++
++if __name__ == "__main__":
++    g.trimesh.util.attach_to_log()
++    unittest.main()
