@@ -65,10 +65,10 @@ index b7168aef..4474c307 100644
  
 diff --git a/trimesh/triangulation.py b/trimesh/triangulation.py
 new file mode 100644
-index 00000000..182dc5ff
+index 00000000..44b4898e
 --- /dev/null
 +++ b/trimesh/triangulation.py
-@@ -0,0 +1,664 @@
+@@ -0,0 +1,713 @@
 +"""
 +triangulation.py
 +-----------------
@@ -80,13 +80,11 @@ index 00000000..182dc5ff
 +
 +import math
 +from collections import deque
++from fractions import Fraction
 +
 +import numpy as np
 +
 +from .typed import NDArray, Number, Sequence, float64, int64
-+
-+# relative tolerance used by the geometric predicates
-+_TOL = 1e-12
 +
 +# how much larger than the input the enclosing triangle is made
 +_SCALE = 1000.0
@@ -97,27 +95,74 @@ index 00000000..182dc5ff
 +# give up rather than refine forever, per vertex of the input
 +_MAX_ADDED = 500
 +
++# a float result further from zero than this many times the size of the
++# terms which made it cannot have the wrong sign, so it can be trusted
++# without falling back to exact arithmetic
++_ORIENT_FILTER = 4.0 * 2.0**-52
++_CIRCLE_FILTER = 16.0 * 2.0**-52
++
++# smallest positive double, used to carry the sign of an exact result
++# which is too small to survive being turned back into a float
++_TINY = 5e-324
++
++
++def _signed(exact) -> float:
++    """
++    Turn an exact result into a float which has the same sign, even
++    when the magnitude is far below what a float can hold.
++    """
++    value = float(exact)
++    if value == 0.0 and exact != 0:
++        return math.copysign(_TINY, float(exact.numerator))
++    return value
++
 +
 +def _orient(a, b, c) -> float:
 +    """
-+    Twice the signed area of the triangle `a, b, c`, positive
-+    when the three points are wound counter-clockwise.
++    Twice the signed area of the triangle `a, b, c`, positive when the
++    three points are wound counter-clockwise. The sign is always right,
++    however close to collinear the points are.
 +    """
-+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
++    left = (b[0] - a[0]) * (c[1] - a[1])
++    right = (b[1] - a[1]) * (c[0] - a[0])
++    determinant = left - right
++    if abs(determinant) > _ORIENT_FILTER * (abs(left) + abs(right)):
++        return determinant
++    ax, ay = Fraction(a[0]), Fraction(a[1])
++    bx, by = Fraction(b[0]), Fraction(b[1])
++    cx, cy = Fraction(c[0]), Fraction(c[1])
++    return _signed((bx - ax) * (cy - ay) - (by - ay) * (cx - ax))
 +
 +
 +def _in_circle(a, b, c, d) -> float:
 +    """
-+    Positive when `d` lies inside the circumcircle of the
-+    counter-clockwise wound triangle `a, b, c`.
++    Positive when `d` lies inside the circumcircle of the counter-clockwise
++    wound triangle `a, b, c`. The sign is always right, however close to
++    cocircular the four points are.
 +    """
 +    adx, ady = a[0] - d[0], a[1] - d[1]
 +    bdx, bdy = b[0] - d[0], b[1] - d[1]
 +    cdx, cdy = c[0] - d[0], c[1] - d[1]
-+    return (
-+        (adx * adx + ady * ady) * (bdx * cdy - cdx * bdy)
-+        - (bdx * bdx + bdy * bdy) * (adx * cdy - cdx * ady)
-+        + (cdx * cdx + cdy * cdy) * (adx * bdy - bdx * ady)
++    bc = bdx * cdy - cdx * bdy
++    ca = cdx * ady - adx * cdy
++    ab = adx * bdy - bdx * ady
++    alift = adx * adx + ady * ady
++    blift = bdx * bdx + bdy * bdy
++    clift = cdx * cdx + cdy * cdy
++    determinant = alift * bc + blift * ca + clift * ab
++    size = (
++        abs(alift) * abs(bc) + abs(blift) * abs(ca) + abs(clift) * abs(ab)
++    )
++    if abs(determinant) > _CIRCLE_FILTER * size:
++        return determinant
++
++    ax, ay = Fraction(a[0]) - Fraction(d[0]), Fraction(a[1]) - Fraction(d[1])
++    bx, by = Fraction(b[0]) - Fraction(d[0]), Fraction(b[1]) - Fraction(d[1])
++    cx, cy = Fraction(c[0]) - Fraction(d[0]), Fraction(c[1]) - Fraction(d[1])
++    return _signed(
++        (ax * ax + ay * ay) * (bx * cy - cx * by)
++        + (bx * bx + by * by) * (cx * ay - ax * cy)
++        + (cx * cx + cy * cy) * (ax * by - bx * ay)
 +    )
 +
 +
@@ -148,7 +193,7 @@ index 00000000..182dc5ff
 +    which holds the directed edge `(b, a)`.
 +    """
 +
-+    def __init__(self, points: list, scale: float):
++    def __init__(self, points: list):
 +        self.points = points
 +        # index of triangle to counter-clockwise wound vertices
 +        self.triangles = {}
@@ -160,8 +205,6 @@ index 00000000..182dc5ff
 +        self.outer = set()
 +        self._next = 0
 +        self._hint = None
-+        self._area = _TOL * scale**2
-+        self._circle = _TOL * scale**4
 +
 +    def add(self, a: int, b: int, c: int, inside: bool = False) -> int:
 +        index = self._next
@@ -204,7 +247,7 @@ index 00000000..182dc5ff
 +        """
 +        Check if vertex `c` lies on the inside of the segment `a, b`.
 +        """
-+        if abs(self.orient(a, b, c)) > self._area:
++        if self.orient(a, b, c) != 0.0:
 +            return False
 +        pa, pb, pc = self.points[a], self.points[b], self.points[c]
 +        dx, dy = pb[0] - pa[0], pb[1] - pa[1]
@@ -218,10 +261,15 @@ index 00000000..182dc5ff
 +        """
 +        if len({a, b, c, d}) != 4:
 +            return False
-+        return (
-+            self.orient(a, b, c) * self.orient(a, b, d) < 0.0
-+            and self.orient(c, d, a) * self.orient(c, d, b) < 0.0
++        # compared as signs rather than products, which would flush to
++        # zero when the exact predicates return very small magnitudes
++        first = math.copysign(1.0, self.orient(a, b, c)) != math.copysign(
++            1.0, self.orient(a, b, d)
 +        )
++        second = math.copysign(1.0, self.orient(c, d, a)) != math.copysign(
++            1.0, self.orient(c, d, b)
++        )
++        return first and second
 +
 +    def locate(self, point):
 +        """
@@ -238,7 +286,7 @@ index 00000000..182dc5ff
 +            step = None
 +            a, b, c = self.triangles[index]
 +            for u, v in ((a, b), (b, c), (c, a)):
-+                if _orient(self.points[u], self.points[v], point) < -self._area:
++                if _orient(self.points[u], self.points[v], point) < 0.0:
 +                    across = self.edges.get((v, u))
 +                    if across is not None:
 +                        step = across
@@ -250,9 +298,9 @@ index 00000000..182dc5ff
 +        # walking can cycle on degenerate input so fall back to a scan
 +        for index, (a, b, c) in self.triangles.items():
 +            if (
-+                _orient(self.points[a], self.points[b], point) >= -self._area
-+                and _orient(self.points[b], self.points[c], point) >= -self._area
-+                and _orient(self.points[c], self.points[a], point) >= -self._area
++                _orient(self.points[a], self.points[b], point) >= 0.0
++                and _orient(self.points[b], self.points[c], point) >= 0.0
++                and _orient(self.points[c], self.points[a], point) >= 0.0
 +            ):
 +                return index
 +        return None
@@ -291,7 +339,7 @@ index 00000000..182dc5ff
 +                if index is None or index in cavity or _edge(u, v) in fixed:
 +                    continue
 +                x, y, z = self.triangles[index]
-+                if self.in_circle(x, y, z, vertex) > self._circle:
++                if self.in_circle(x, y, z, vertex) > 0.0:
 +                    cavity.add(index)
 +                    queue.append(index)
 +
@@ -372,8 +420,8 @@ index 00000000..182dc5ff
 +            far = self.apex(left, right)
 +            # only a strictly convex quad can be flipped
 +            if (
-+                self.orient(near, right, far) <= self._area
-+                or self.orient(near, far, left) <= self._area
++                self.orient(near, right, far) <= 0.0
++                or self.orient(near, far, left) <= 0.0
 +            ):
 +                queue.append((right, left))
 +                stall += 1
@@ -431,11 +479,11 @@ index 00000000..182dc5ff
 +            # vertices of the enclosing triangle are dropped later on
 +            if not self.outer.isdisjoint((a, b, near, far)):
 +                continue
-+            if self.in_circle(a, b, near, far) <= self._circle:
++            if self.in_circle(a, b, near, far) <= 0.0:
 +                continue
 +            if (
-+                self.orient(near, a, far) <= self._area
-+                or self.orient(near, far, b) <= self._area
++                self.orient(near, a, far) <= 0.0
++                or self.orient(near, far, b) <= 0.0
 +            ):
 +                continue
 +            self.flip(a, b, near, far)
@@ -480,7 +528,7 @@ index 00000000..182dc5ff
 +            for index, triangle in self.triangles.items()
 +            if self.inside[index]
 +            and self.outer.isdisjoint(triangle)
-+            and self.orient(*triangle) > self._area
++            and self.orient(*triangle) > 0.0
 +        ]
 +
 +    def facing(self, segment: tuple) -> set:
@@ -504,7 +552,7 @@ index 00000000..182dc5ff
 +        b = self.points[segment[1]]
 +        return (a[0] - point[0]) * (b[0] - point[0]) + (a[1] - point[1]) * (
 +            b[1] - point[1]
-+        ) < -self._area
++        ) < 0.0
 +
 +    def split(self, segment: tuple, fixed: set) -> None:
 +        """
@@ -532,7 +580,7 @@ index 00000000..182dc5ff
 +                continue
 +            a, b, c = (self.points[vertex] for vertex in triangle)
 +            area = _orient(a, b, c) / 2.0
-+            if area <= self._area:
++            if area <= 0.0:
 +                continue
 +            sides = (
 +                math.hypot(b[0] - a[0], b[1] - a[1]),
@@ -625,20 +673,22 @@ index 00000000..182dc5ff
 +    segments
 +      Set of index pairs, one per ring segment.
 +    """
-+    points = []
-+    lookup = {}
++    # sorting the points gives them an order which depends on the polygon
++    # and not on where a ring happens to start or which way it is wound,
++    # so the triangulation which follows is the same for either
++    unique = set()
++    for ring in rings:
++        for point in np.asanyarray(ring, dtype=float64).reshape((-1, 2)):
++            unique.add((float(point[0]), float(point[1])))
++    points = sorted(unique)
++    lookup = {key: index for index, key in enumerate(points)}
 +    segments = set()
 +
 +    for ring in rings:
 +        ring = np.asanyarray(ring, dtype=float64).reshape((-1, 2))
 +        indexes = []
 +        for point in ring:
-+            key = (float(point[0]), float(point[1]))
-+            index = lookup.get(key)
-+            if index is None:
-+                index = len(points)
-+                lookup[key] = index
-+                points.append(key)
++            index = lookup[(float(point[0]), float(point[1]))]
 +            if len(indexes) == 0 or indexes[-1] != index:
 +                indexes.append(index)
 +        # rings arrive closed so drop the repeated final vertex
@@ -696,10 +746,9 @@ index 00000000..182dc5ff
 +    array = np.array(points, dtype=float64)
 +    middle = (array.min(axis=0) + array.max(axis=0)) / 2.0
 +    radius = max(float(np.abs(array - middle).max()), 1.0) * _SCALE
-+    scale = max(float(np.abs(array).max()), 1.0)
 +
 +    # an enclosing triangle which is dropped once the mesh is done
-+    mesh = _Mesh(list(points), scale)
++    mesh = _Mesh(list(points))
 +    for angle in (90.0, 210.0, 330.0):
 +        radians = math.radians(angle)
 +        mesh.outer.add(len(mesh.points))

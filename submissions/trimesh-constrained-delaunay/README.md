@@ -11,7 +11,7 @@
 
 ## Files
 
-- `problem.md` — problem description, 189 words, ready to paste
+- `problem.md` — problem description, 187 words, ready to paste
 - `test.patch` — `test.sh` + `tests/test_delaunay_fe0bc1.py`
 - `solution.patch` — `trimesh/triangulation.py` + `trimesh/creation.py` wiring
 - `Dockerfile` — build environment
@@ -20,9 +20,9 @@
 
 | Patch | NBNCC lines |
 | --- | --- |
-| `solution.patch` | 454 |
-| `test.patch` | 384 |
-| combined | 838 |
+| `solution.patch` | 484 |
+| `test.patch` | 444 |
+| combined | 928 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -32,8 +32,8 @@ Fresh worktree at the base commit, patches applied with `git apply`:
 
 | State | `./test.sh base` | `./test.sh new` |
 | --- | --- | --- |
-| `test.patch` only | 61 passed | 23 failed |
-| `test.patch` + `solution.patch` | 61 passed | 23 passed |
+| `test.patch` only | 61 passed | 26 failed |
+| `test.patch` + `solution.patch` | 61 passed | 26 passed |
 
 Both patches pass `git apply --check`. The new suite runs in under 3s, the
 base suite in about 30s.
@@ -95,3 +95,27 @@ of quality targets by the other engines.
 - The Dockerfile pins every dependency and performs no project install; the
   package is imported from `/app`. Verified in a clean virtualenv holding only
   those pins.
+
+## Difficulty
+
+Two requirements carry the difficulty, both stated in the description so no
+agent fails on something it was not told.
+
+**The result depends on the polygon, not the input order.** Rotating a ring's
+start vertex or reversing its winding has to give the identical triangle set.
+An implementation which inserts vertices in the order they arrive picks a
+different diagonal on cocircular input, which is exactly what a square or a
+regular n-gon is.
+
+**The predicates are exact.** The orientation and circle tests decide cases
+that are a rounding error from degenerate, so the suite evaluates the local
+Delaunay property in exact arithmetic rather than with a tolerance.
+
+Measured against the suite, an implementation which uses float predicates and
+input order — the textbook build — fails `test_annulus`,
+`test_independent_of_ring_order`, `test_near_degenerate`,
+`test_regular_polygons` and `test_near_collinear`. The annulus is a plain
+circle with a hole, so the exactness requirement bites on ordinary geometry
+and not only on the contrived cases. At larger coordinate scales float
+predicates make the flip loop cycle rather than fail, so those runs hang
+instead of finishing.
