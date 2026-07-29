@@ -1,6 +1,6 @@
 diff --git a/test.sh b/test.sh
 new file mode 100755
-index 00000000..80081269
+index 00000000..1ac3b07e
 --- /dev/null
 +++ b/test.sh
 @@ -0,0 +1,49 @@
@@ -43,7 +43,7 @@ index 00000000..80081269
 +    )
 +    ;;
 +  new)
-+    TARGETS=(tests/test_delaunay.py)
++    TARGETS=(tests/test_delaunay_7aa206.py)
 +    ;;
 +  *)
 +    echo "unknown mode: $MODE (expected base or new)" >&2
@@ -53,12 +53,12 @@ index 00000000..80081269
 +
 +python -m pytest "${TARGETS[@]}" -v -p no:randomly --junitxml="$OUTPUT_PATH"
 +exit $?
-diff --git a/tests/test_delaunay.py b/tests/test_delaunay.py
+diff --git a/tests/test_delaunay_7aa206.py b/tests/test_delaunay_7aa206.py
 new file mode 100644
-index 00000000..b5a7b500
+index 00000000..740b4364
 --- /dev/null
-+++ b/tests/test_delaunay.py
-@@ -0,0 +1,486 @@
++++ b/tests/test_delaunay_7aa206.py
+@@ -0,0 +1,478 @@
 +"""
 +Tests for the built-in constrained Delaunay triangulation engine.
 +"""
@@ -101,6 +101,43 @@ index 00000000..b5a7b500
 +
 +def key_of(point):
 +    return (round(float(point[0]), 9), round(float(point[1]), 9))
++
++
++# Setup for a process where none of the optional packages can be imported or
++# even detected, so the engine has to stand on the required dependencies.
++ISOLATED = '''
++import sys
++
++for name in ("mapbox_earcut", "manifold3d", "triangle", "scipy"):
++    sys.modules[name] = None
++
++import numpy as np
++from shapely.geometry import Polygon
++
++import trimesh
++
++for name in ("mapbox_earcut", "manifold3d", "triangle", "scipy"):
++    try:
++        __import__(name)
++        raise AssertionError(name + " was importable")
++    except ImportError:
++        pass
++
++polygon = Polygon(
++    [(0, 0), (4, 0), (4, 4), (0, 4)], [[(1, 1), (1, 2), (2, 2), (2, 1)]]
++)
++
++
++def check(result):
++    vertices, faces = result
++    triangles = np.asarray(vertices)[np.asarray(faces)]
++    ab = triangles[:, 1] - triangles[:, 0]
++    ac = triangles[:, 2] - triangles[:, 0]
++    area = ((ab[:, 0] * ac[:, 1] - ab[:, 1] * ac[:, 0]) / 2.0).sum()
++    assert abs(area - polygon.area) < 1e-9, area
++    print("OK", len(faces))
++
++'''
 +
 +
 +class DelaunayTest(g.unittest.TestCase):
@@ -471,75 +508,30 @@ index 00000000..b5a7b500
 +            middle = g.Point((vertices[u] + vertices[v]) / 2.0)
 +            assert polygon.exterior.distance(middle) < 1e-9
 +
-+    def test_engine_is_always_available(self):
-+        # with none of the optional packages installed the built-in engine
-+        # is the one which gets picked, rather than raising
-+        polygon = g.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
-+        patched = [
-+            (name, False if name in ("earcut", "manifold", "triangle") else available)
-+            for name, available in g.trimesh.creation._engines
-+        ]
-+        original = g.trimesh.creation._engines
-+        try:
-+            g.trimesh.creation._engines = patched
-+            _, faces = g.trimesh.creation.triangulate_polygon(polygon)
-+        finally:
-+            g.trimesh.creation._engines = original
-+        assert len(np.asarray(faces)) == 2
-+
-+    def test_no_optional_dependencies(self):
-+        # the engine has to run with nothing but the required dependencies,
-+        # so check it in a process where the optional ones cannot be imported
-+        script = """
-+import importlib.abc, importlib.machinery, sys
-+
-+BLOCKED = ("mapbox_earcut", "manifold3d", "triangle", "scipy")
-+
-+class Loader(importlib.abc.Loader):
-+    def create_module(self, spec):
-+        raise ImportError(spec.name)
-+    def exec_module(self, module):
-+        raise ImportError("blocked")
-+
-+class Finder(importlib.abc.MetaPathFinder):
-+    def find_spec(self, name, path=None, target=None):
-+        if name.split(".")[0] in BLOCKED:
-+            return importlib.machinery.ModuleSpec(name, Loader())
-+        return None
-+
-+sys.meta_path.insert(0, Finder())
-+for name in list(sys.modules):
-+    if name.split(".")[0] in BLOCKED:
-+        del sys.modules[name]
-+
-+import numpy as np
-+from shapely.geometry import Polygon
-+import trimesh
-+
-+for name in BLOCKED:
-+    try:
-+        __import__(name)
-+        raise AssertionError(name + " was importable")
-+    except ImportError:
-+        pass
-+
-+polygon = Polygon([(0, 0), (4, 0), (4, 4), (0, 4)], [[(1, 1), (1, 2), (2, 2), (2, 1)]])
-+vertices, faces = trimesh.creation.triangulate_polygon(polygon, engine="delaunay")
-+triangles = np.asarray(vertices)[np.asarray(faces)]
-+ab = triangles[:, 1] - triangles[:, 0]
-+ac = triangles[:, 2] - triangles[:, 0]
-+area = ((ab[:, 0] * ac[:, 1] - ab[:, 1] * ac[:, 0]) / 2.0).sum()
-+assert abs(area - polygon.area) < 1e-9, area
-+print("OK", len(faces))
-+"""
++    def isolated(self, body):
++        """
++        Run a snippet against a process which has no optional packages.
++        """
 +        result = subprocess.run(
-+            [sys.executable, "-c", script],
++            [sys.executable, "-c", ISOLATED + body],
 +            capture_output=True,
 +            text=True,
 +            cwd=g.os.path.dirname(g.os.path.dirname(g.trimesh.__file__)),
 +        )
 +        assert result.returncode == 0, result.stderr
 +        assert "OK" in result.stdout
++
++    def test_no_optional_dependencies(self):
++        # the engine has to run on the required dependencies alone
++        self.isolated(
++            "check(trimesh.creation.triangulate_polygon(polygon,"
++            " engine='delaunay'))"
++        )
++
++    def test_chosen_when_nothing_else_is_installed(self):
++        # with no optional package present the built-in engine is the one
++        # `triangulate_polygon` settles on, rather than raising
++        self.isolated("check(trimesh.creation.triangulate_polygon(polygon))")
 +
 +
 +if __name__ == "__main__":

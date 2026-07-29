@@ -11,8 +11,8 @@
 
 ## Files
 
-- `problem.md` — problem description, 185 words, ready to paste
-- `test.patch` — `test.sh` + `tests/test_delaunay.py`
+- `problem.md` — problem description, 175 words, ready to paste
+- `test.patch` — `test.sh` + `tests/test_delaunay_7aa206.py`
 - `solution.patch` — `trimesh/triangulation.py` + `trimesh/creation.py` wiring
 - `Dockerfile` — build environment
 
@@ -21,8 +21,8 @@
 | Patch | NBNCC lines |
 | --- | --- |
 | `solution.patch` | 454 |
-| `test.patch` | 361 |
-| combined | 815 |
+| `test.patch` | 381 |
+| combined | 835 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -71,3 +71,19 @@ extreme scales (1e-4 and 1e6); real CAD geometry from the repository's own DXF
 corpus; extrusion to a watertight solid; minimum-angle and maximum-area
 refinement including boundary preservation, argument validation, and rejection
 of quality targets by the other engines.
+
+## Review responses
+
+- The engine-availability test no longer touches `trimesh.creation._engines`.
+  Both isolation tests now run in a subprocess which sets
+  `sys.modules[name] = None` for the optional packages, which makes
+  `importlib.util.find_spec` return None *and* makes `import` raise. Automatic
+  engine selection is therefore exercised purely through the public
+  `triangulate_polygon` call.
+- The test file carries an unpredictable suffix,
+  `tests/test_delaunay_7aa206.py`, so an implementer cannot collide with it.
+- The description states the accepted `min_angle` range and that a zero-area
+  polygon yields no triangles.
+- The Dockerfile pins every dependency and performs no project install; the
+  package is imported from `/app`. Verified in a clean virtualenv holding only
+  those pins.
