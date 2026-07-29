@@ -20,9 +20,9 @@
 
 | Patch | NBNCC lines |
 | --- | --- |
-| `solution.patch` | 484 |
-| `test.patch` | 444 |
-| combined | 928 |
+| `solution.patch` | 486 |
+| `test.patch` | 473 |
+| combined | 959 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -32,8 +32,8 @@ Fresh worktree at the base commit, patches applied with `git apply`:
 
 | State | `./test.sh base` | `./test.sh new` |
 | --- | --- | --- |
-| `test.patch` only | 61 passed | 26 failed |
-| `test.patch` + `solution.patch` | 61 passed | 26 passed |
+| `test.patch` only | 61 passed | 27 failed |
+| `test.patch` + `solution.patch` | 61 passed | 27 passed |
 
 Both patches pass `git apply --check`. The new suite runs in under 3s, the
 base suite in about 30s.
@@ -119,3 +119,23 @@ circle with a hole, so the exactness requirement bites on ordinary geometry
 and not only on the contrived cases. At larger coordinate scales float
 predicates make the flip loop cycle rather than fail, so those runs hang
 instead of finishing.
+
+## Boundary recovery coverage
+
+An adjudication found a candidate which passed the suite while refusing to
+triangulate a valid polygon, raising out of its constraint recovery on
+`Polygon([(31,7),(15,6),(226,95),(1,1),(3,6),(11,56),(0,-1)])`. The suite had
+no polygon which reached that path.
+
+`test_far_flung_vertices` closes it: fourteen valid simple polygons, that one
+included, whose vertices are spread over several hundred units while most sit
+within a dozen of the origin, each run at three scales. A boundary segment on
+these crosses most of the triangulation before it can be recovered, which is
+what makes flip based recovery stall. Any implementation which raises, or
+which quietly drops a boundary segment, fails the shared invariant check
+because it requires every ring segment to survive as an edge.
+
+The reference triangulates all fourteen at every scale, and a sweep of 616
+further valid polygons drawn the same way passes with no failures. The
+reference's own flip loop now raises rather than giving up quietly if it ever
+fails to place a segment, so a stall can never be mistaken for a result.

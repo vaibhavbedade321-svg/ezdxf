@@ -65,10 +65,10 @@ index b7168aef..4474c307 100644
  
 diff --git a/trimesh/triangulation.py b/trimesh/triangulation.py
 new file mode 100644
-index 00000000..44b4898e
+index 00000000..7f6162f6
 --- /dev/null
 +++ b/trimesh/triangulation.py
-@@ -0,0 +1,713 @@
+@@ -0,0 +1,717 @@
 +"""
 +triangulation.py
 +-----------------
@@ -412,7 +412,11 @@ index 00000000..44b4898e
 +        """
 +        queue = deque(crossed)
 +        stall = 0
-+        while len(queue) > 0 and stall <= len(queue):
++        while len(queue) > 0:
++            if stall > len(queue):
++                # every remaining quad was non-convex on a full pass, which
++                # should not happen with exact predicates on a valid polygon
++                raise ValueError("unable to recover a boundary segment")
 +            right, left = queue.popleft()
 +            if (right, left) not in self.edges or (left, right) not in self.edges:
 +                continue
