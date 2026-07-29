@@ -55,10 +55,10 @@ index 00000000..80081269
 +exit $?
 diff --git a/tests/test_delaunay.py b/tests/test_delaunay.py
 new file mode 100644
-index 00000000..47528b1b
+index 00000000..b5a7b500
 --- /dev/null
 +++ b/tests/test_delaunay.py
-@@ -0,0 +1,348 @@
+@@ -0,0 +1,486 @@
 +"""
 +Tests for the built-in constrained Delaunay triangulation engine.
 +"""
@@ -332,6 +332,144 @@ index 00000000..47528b1b
 +        assert mesh.is_watertight
 +        assert mesh.is_volume
 +        assert g.np.isclose(mesh.volume, polygon.area * 2.0)
++
++    def refined(self, polygon, **kwargs):
++        """
++        Triangulate with a quality target and check everything which
++        still has to hold once vertices are allowed to be added.
++        """
++        vertices, faces = g.trimesh.creation.triangulate_polygon(
++            polygon, engine="delaunay", **kwargs
++        )
++        vertices = np.asarray(vertices, dtype=np.float64)
++        faces = np.asarray(faces, dtype=np.int64)
++        triangles = vertices[faces]
++        area = signed_area(triangles)
++
++        # still wound the same way and still an exact cover
++        assert area.min() > 0.0
++        assert g.np.isclose(area.sum(), polygon.area, rtol=1e-9, atol=1e-9)
++
++        # the original ring vertices all survive refinement
++        want = set()
++        for ring in rings(polygon):
++            want.update(key_of(p) for p in ring)
++        got = {key_of(p) for p in vertices}
++        assert want.issubset(got)
++
++        # no face may poke outside the polygon
++        grown = polygon.buffer(1e-9)
++        for centroid in triangles.mean(axis=1):
++            assert grown.contains(g.Point(centroid))
++
++        return vertices, faces, triangles
++
++    def smallest_angle(self, triangles):
++        out = []
++        for tri in triangles:
++            for i in range(3):
++                a, b, c = tri[i], tri[(i + 1) % 3], tri[(i + 2) % 3]
++                u, v = b - a, c - a
++                cos = np.dot(u, v) / (np.linalg.norm(u) * np.linalg.norm(v))
++                out.append(np.degrees(np.arccos(np.clip(cos, -1.0, 1.0))))
++        return min(out)
++
++    def test_min_angle(self):
++        polygons = [
++            g.Polygon([(0, 0), (12, 0), (12, 1), (0, 1)]),
++            g.Polygon([(0, 0), (3, 0), (3, 1), (1, 1), (1, 3), (0, 3)]),
++            g.Polygon(
++                [(0, 0), (9, 0), (9, 9), (0, 9)], [[(3, 3), (3, 6), (6, 6), (6, 3)]]
++            ),
++        ]
++        for polygon in polygons:
++            for min_angle in [15.0, 20.0, 25.0]:
++                _, _, triangles = self.refined(polygon, min_angle=min_angle)
++                assert self.smallest_angle(triangles) >= min_angle - 1e-6
++
++    def test_min_angle_adds_vertices(self):
++        # a long thin strip cannot meet a quality target with the
++        # vertices it starts with
++        polygon = g.Polygon([(0, 0), (12, 0), (12, 1), (0, 1)])
++        plain, _ = self.triangulate(polygon)
++        vertices, _, triangles = self.refined(polygon, min_angle=25.0)
++        assert len(vertices) > len(plain)
++        assert self.smallest_angle(triangles) >= 25.0 - 1e-6
++
++    def test_max_area(self):
++        polygons = [
++            g.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)]),
++            g.Polygon([(0, 0), (3, 0), (3, 1), (1, 1), (1, 3), (0, 3)]),
++            g.Polygon(
++                [(0, 0), (9, 0), (9, 9), (0, 9)], [[(3, 3), (3, 6), (6, 6), (6, 3)]]
++            ),
++        ]
++        for polygon in polygons:
++            for max_area in [1.0, 0.25]:
++                _, faces, triangles = self.refined(polygon, max_area=max_area)
++                assert signed_area(triangles).max() <= max_area + 1e-9
++                assert len(faces) >= polygon.area / max_area
++
++    def test_both_targets(self):
++        polygon = g.Polygon([(0, 0), (6, 0), (6, 4), (0, 4)])
++        _, _, triangles = self.refined(polygon, min_angle=20.0, max_area=0.5)
++        assert self.smallest_angle(triangles) >= 20.0 - 1e-6
++        assert signed_area(triangles).max() <= 0.5 + 1e-9
++
++    def test_quality_is_optional(self):
++        # without a target nothing is added
++        polygon = g.Polygon([(0, 0), (12, 0), (12, 1), (0, 1)])
++        vertices, _ = self.triangulate(polygon)
++        assert len(vertices) == 4
++
++    def test_bad_quality_arguments(self):
++        polygon = g.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
++        # a target inside the supported range is accepted
++        self.refined(polygon, min_angle=20.0, max_area=1.0)
++
++        for kwargs in [
++            {"min_angle": 0.0},
++            {"min_angle": -5.0},
++            {"min_angle": 45.0},
++            {"max_area": 0.0},
++            {"max_area": -1.0},
++        ]:
++            with self.assertRaises(ValueError):
++                g.trimesh.creation.triangulate_polygon(
++                    polygon, engine="delaunay", **kwargs
++                )
++
++        # a quality target cannot be honoured without adding vertices
++        with self.assertRaises(ValueError):
++            g.trimesh.creation.triangulate_polygon(
++                polygon, engine="delaunay", min_angle=25.0, force_vertices=True
++            )
++
++    def test_quality_needs_the_engine(self):
++        # the other engines have no way to honour a quality target
++        polygon = g.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
++        for engine in ["earcut", "manifold", "triangle"]:
++            with self.assertRaises(ValueError):
++                g.trimesh.creation.triangulate_polygon(
++                    polygon, engine=engine, min_angle=20.0
++                )
++
++    def test_refined_boundary_is_preserved(self):
++        # refinement may split a ring segment but never move the boundary
++        polygon = g.Polygon([(0, 0), (12, 0), (12, 1), (0, 1)])
++        vertices, faces, _ = self.refined(polygon, min_angle=25.0)
++
++        boundary = {}
++        for a, b, c in faces:
++            for u, v in ((a, b), (b, c), (c, a)):
++                edge = (min(u, v), max(u, v))
++                boundary[edge] = boundary.get(edge, 0) + 1
++        outline = [e for e, count in boundary.items() if count == 1]
++
++        # every edge used once lies along the outline of the polygon
++        for u, v in outline:
++            middle = g.Point((vertices[u] + vertices[v]) / 2.0)
++            assert polygon.exterior.distance(middle) < 1e-9
 +
 +    def test_engine_is_always_available(self):
 +        # with none of the optional packages installed the built-in engine

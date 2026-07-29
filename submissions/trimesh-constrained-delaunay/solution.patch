@@ -1,5 +1,5 @@
 diff --git a/trimesh/creation.py b/trimesh/creation.py
-index b7168aef..48f46cbc 100644
+index b7168aef..4474c307 100644
 --- a/trimesh/creation.py
 +++ b/trimesh/creation.py
 @@ -35,6 +35,8 @@ _engines = [
@@ -11,39 +11,79 @@ index b7168aef..48f46cbc 100644
  ]
  
  
-@@ -649,6 +651,13 @@ def triangulate_polygon(
+@@ -574,6 +576,8 @@ def triangulate_polygon(
+     triangle_args: str | None = None,
+     engine: str | None = None,
+     force_vertices: bool = False,
++    min_angle: Number | None = None,
++    max_area: Number | None = None,
+     **kwargs,
+ ) -> tuple[NDArray[np.float64], NDArray[np.int64]]:
+     """
+@@ -596,6 +600,12 @@ def triangulate_polygon(
+       Many operations can't handle new vertices being inserted, so this will
+       attempt to generate a triangulation without new vertices and raise a
+       ValueError if it is unable to do so.
++    min_angle
++      Smallest angle in degrees any triangle is allowed to have, only
++      supported by the `delaunay` engine.
++    max_area
++      Largest area any triangle is allowed to have, only supported by
++      the `delaunay` engine.
+ 
+     Returns
+     --------------
+@@ -609,6 +619,9 @@ def triangulate_polygon(
+         # try getting the first engine that is installed
+         engine = next((name for name, exists in _engines if exists), None)
+ 
++    if (min_angle is not None or max_area is not None) and engine != "delaunay":
++        raise ValueError("quality targets are only supported by the `delaunay` engine!")
++
+     if polygon is None or polygon.is_empty:
+         return [], []
+ 
+@@ -649,6 +662,19 @@ def triangulate_polygon(
          faces = manifold3d.triangulate(rings).astype(np.int64)
          vertices = np.vstack(rings, dtype=np.float64)
  
 +    elif engine == "delaunay":
 +        from .triangulation import constrained_delaunay
 +
++        quality = min_angle is not None or max_area is not None
++        if quality and force_vertices:
++            raise ValueError("`force_vertices` can't be met with a quality target!")
++
 +        rings = [np.array(polygon.exterior.coords)]
 +        rings.extend(np.array(b.coords) for b in polygon.interiors)
-+        vertices, faces = constrained_delaunay(rings)
++        vertices, faces = constrained_delaunay(
++            rings, min_angle=min_angle, max_area=max_area
++        )
 +
      elif engine == "triangle":
          from triangle import triangulate
  
 diff --git a/trimesh/triangulation.py b/trimesh/triangulation.py
 new file mode 100644
-index 00000000..2fbbe2c5
+index 00000000..182dc5ff
 --- /dev/null
 +++ b/trimesh/triangulation.py
-@@ -0,0 +1,440 @@
+@@ -0,0 +1,664 @@
 +"""
 +triangulation.py
 +-----------------
 +
-+A constrained Delaunay triangulation of polygons with holes
-+which needs nothing outside of the required dependencies.
++A constrained Delaunay triangulation of polygons with holes, with
++optional quality refinement, which needs nothing outside of the
++required dependencies.
 +"""
 +
++import math
 +from collections import deque
 +
 +import numpy as np
 +
-+from .typed import NDArray, Sequence, float64, int64
++from .typed import NDArray, Number, Sequence, float64, int64
 +
 +# relative tolerance used by the geometric predicates
 +_TOL = 1e-12
@@ -51,8 +91,11 @@ index 00000000..2fbbe2c5
 +# how much larger than the input the enclosing triangle is made
 +_SCALE = 1000.0
 +
-+# stop flipping if this many operations didn't finish the job
-+_LIMIT = 1000000
++# refuse minimum angles which are not known to terminate
++_MAX_ANGLE = 30.0
++
++# give up rather than refine forever, per vertex of the input
++_MAX_ADDED = 500
 +
 +
 +def _orient(a, b, c) -> float:
@@ -78,6 +121,26 @@ index 00000000..2fbbe2c5
 +    )
 +
 +
++def _circumcenter(a, b, c):
++    """
++    The center of the circle through all three points, or None
++    when they are collinear.
++    """
++    bx, by = b[0] - a[0], b[1] - a[1]
++    cx, cy = c[0] - a[0], c[1] - a[1]
++    d = 2.0 * (bx * cy - by * cx)
++    if d == 0.0:
++        return None
++    bs = bx * bx + by * by
++    cs = cx * cx + cy * cy
++    return (a[0] + (cy * bs - by * cs) / d, a[1] + (bx * cs - cx * bs) / d)
++
++
++def _edge(a: int, b: int) -> tuple:
++    """An edge key which doesn't care about direction."""
++    return (a, b) if a < b else (b, a)
++
++
 +class _Mesh:
 +    """
 +    A triangle mesh stored as a map of directed edges, i.e. the
@@ -91,21 +154,29 @@ index 00000000..2fbbe2c5
 +        self.triangles = {}
 +        # directed edge to the index of the triangle holding it
 +        self.edges = {}
++        # index of triangle to whether it is inside the polygon
++        self.inside = {}
++        # vertices of the enclosing triangle
++        self.outer = set()
 +        self._next = 0
++        self._hint = None
 +        self._area = _TOL * scale**2
 +        self._circle = _TOL * scale**4
 +
-+    def add(self, a: int, b: int, c: int) -> int:
++    def add(self, a: int, b: int, c: int, inside: bool = False) -> int:
 +        index = self._next
 +        self._next += 1
 +        self.triangles[index] = (a, b, c)
++        self.inside[index] = inside
 +        self.edges[(a, b)] = index
 +        self.edges[(b, c)] = index
 +        self.edges[(c, a)] = index
++        self._hint = index
 +        return index
 +
 +    def pop(self, index: int) -> None:
 +        a, b, c = self.triangles.pop(index)
++        del self.inside[index]
 +        del self.edges[(a, b)]
 +        del self.edges[(b, c)]
 +        del self.edges[(c, a)]
@@ -152,38 +223,63 @@ index 00000000..2fbbe2c5
 +            and self.orient(c, d, a) * self.orient(c, d, b) < 0.0
 +        )
 +
-+    def locate(self, vertex: int):
++    def locate(self, point):
 +        """
-+        Index of a triangle which contains the passed vertex.
++        Index of a triangle containing the passed point, found by
++        stepping from triangle to triangle towards it.
 +        """
++        if len(self.triangles) == 0:
++            return None
++        if self._hint in self.triangles:
++            index = self._hint
++        else:
++            index = next(iter(self.triangles))
++        for _ in range(len(self.triangles) + 3):
++            step = None
++            a, b, c = self.triangles[index]
++            for u, v in ((a, b), (b, c), (c, a)):
++                if _orient(self.points[u], self.points[v], point) < -self._area:
++                    across = self.edges.get((v, u))
++                    if across is not None:
++                        step = across
++                        break
++            if step is None:
++                self._hint = index
++                return index
++            index = step
++        # walking can cycle on degenerate input so fall back to a scan
 +        for index, (a, b, c) in self.triangles.items():
 +            if (
-+                self.orient(a, b, vertex) >= -self._area
-+                and self.orient(b, c, vertex) >= -self._area
-+                and self.orient(c, a, vertex) >= -self._area
++                _orient(self.points[a], self.points[b], point) >= -self._area
++                and _orient(self.points[b], self.points[c], point) >= -self._area
++                and _orient(self.points[c], self.points[a], point) >= -self._area
 +            ):
 +                return index
 +        return None
 +
 +    def border(self, cavity: set) -> list:
 +        """
-+        The directed edges enclosing a set of triangles.
++        The directed edges enclosing a set of triangles, each with the
++        inside flag of the triangle it came from. Splitting a boundary
++        segment gives a cavity which spans both sides of it, so the
++        flag has to be carried per edge rather than for the whole hole.
 +        """
 +        border = []
 +        for index in cavity:
 +            a, b, c = self.triangles[index]
 +            for u, v in ((a, b), (b, c), (c, a)):
 +                if self.edges.get((v, u)) not in cavity:
-+                    border.append((u, v))
++                    border.append((u, v, self.inside[index]))
 +        return border
 +
-+    def insert(self, vertex: int) -> None:
++    def insert(self, vertex: int, fixed: frozenset = frozenset()) -> None:
 +        """
 +        Add a vertex using the Bowyer-Watson approach: drop every
-+        triangle whose circumcircle holds the vertex and fill the
-+        hole that leaves behind.
++        triangle whose circumcircle holds the vertex and fill the hole
++        that leaves behind. Fixed edges are never crossed, which keeps
++        the cavity on one side of the polygon boundary.
 +        """
-+        seed = self.locate(vertex)
++        seed = self.locate(self.points[vertex])
 +        if seed is None:
 +            return
 +        cavity = {seed}
@@ -192,7 +288,7 @@ index 00000000..2fbbe2c5
 +            a, b, c = self.triangles[queue.pop()]
 +            for u, v in ((a, b), (b, c), (c, a)):
 +                index = self.edges.get((v, u))
-+                if index is None or index in cavity:
++                if index is None or index in cavity or _edge(u, v) in fixed:
 +                    continue
 +                x, y, z = self.triangles[index]
 +                if self.in_circle(x, y, z, vertex) > self._circle:
@@ -205,8 +301,10 @@ index 00000000..2fbbe2c5
 +            border = self.border(cavity)
 +            grow = {
 +                self.edges[(v, u)]
-+                for u, v in border
-+                if (v, u) in self.edges and self.between(u, v, vertex)
++                for u, v, _ in border
++                if (v, u) in self.edges
++                and _edge(u, v) not in fixed
++                and self.between(u, v, vertex)
 +            }
 +            grow.difference_update(cavity)
 +            if len(grow) == 0:
@@ -215,8 +313,8 @@ index 00000000..2fbbe2c5
 +
 +        for index in cavity:
 +            self.pop(index)
-+        for u, v in border:
-+            self.add(u, v, vertex)
++        for u, v, inside in border:
++            self.add(u, v, vertex, inside)
 +
 +    def walk(self, start: int, end: int):
 +        """
@@ -225,7 +323,7 @@ index 00000000..2fbbe2c5
 +        on the segment.
 +        """
 +        crossed = []
-+        for index, triangle in self.triangles.items():
++        for triangle in self.triangles.values():
 +            if start not in triangle:
 +                continue
 +            offset = triangle.index(start)
@@ -266,7 +364,7 @@ index 00000000..2fbbe2c5
 +        """
 +        queue = deque(crossed)
 +        stall = 0
-+        while len(queue) > 0 and stall <= len(queue) and self._next < _LIMIT:
++        while len(queue) > 0 and stall <= len(queue):
 +            right, left = queue.popleft()
 +            if (right, left) not in self.edges or (left, right) not in self.edges:
 +                continue
@@ -281,15 +379,24 @@ index 00000000..2fbbe2c5
 +                stall += 1
 +                continue
 +            stall = 0
-+            self.pop(self.edges[(right, left)])
-+            self.pop(self.edges[(left, right)])
-+            self.add(near, right, far)
-+            self.add(near, far, left)
++            self.flip(right, left, near, far)
 +            if self.crossing(start, end, near, far):
 +                if self.orient(start, end, near) < 0.0:
 +                    queue.append((near, far))
 +                else:
 +                    queue.append((far, near))
++
++    def flip(self, a: int, b: int, near: int, far: int) -> None:
++        """
++        Replace the edge `a, b` with the edge `near, far`.
++        """
++        first = self.edges[(a, b)]
++        second = self.edges[(b, a)]
++        inside = self.inside[first]
++        self.pop(first)
++        self.pop(second)
++        self.add(near, a, far, inside)
++        self.add(near, far, b, inside)
 +
 +    def constrain(self, start: int, end: int) -> None:
 +        """
@@ -304,14 +411,14 @@ index 00000000..2fbbe2c5
 +            self.force(start, reached, crossed)
 +            start = reached
 +
-+    def delaunay(self, fixed: set, count: int) -> None:
++    def delaunay(self, fixed: set) -> None:
 +        """
 +        Flip every edge which isn't locally Delaunay, leaving the
 +        fixed edges and the enclosing triangle alone.
 +        """
-+        stack = [(a, b) for a, b in self.edges if a < b]
++        stack = [_edge(a, b) for a, b in self.edges if a < b]
 +        queued = set(stack)
-+        while len(stack) > 0 and self._next < _LIMIT:
++        while len(stack) > 0:
 +            edge = stack.pop()
 +            queued.discard(edge)
 +            a, b = edge
@@ -322,7 +429,7 @@ index 00000000..2fbbe2c5
 +            if near is None or far is None:
 +                continue
 +            # vertices of the enclosing triangle are dropped later on
-+            if max(a, b, near, far) >= count:
++            if not self.outer.isdisjoint((a, b, near, far)):
 +                continue
 +            if self.in_circle(a, b, near, far) <= self._circle:
 +                continue
@@ -331,55 +438,190 @@ index 00000000..2fbbe2c5
 +                or self.orient(near, far, b) <= self._area
 +            ):
 +                continue
-+            self.pop(self.edges[(a, b)])
-+            self.pop(self.edges[(b, a)])
-+            self.add(near, a, far)
-+            self.add(near, far, b)
++            self.flip(a, b, near, far)
 +            for u, v in ((a, far), (far, b), (b, near), (near, a)):
-+                other = (u, v) if u < v else (v, u)
++                other = _edge(u, v)
 +                if other not in queued:
 +                    queued.add(other)
 +                    stack.append(other)
 +
-+    def enclosed(self, boundary: set, count: int) -> list:
++    def classify(self, boundary: set) -> None:
 +        """
-+        The triangles inside the polygon, found by walking inwards from
-+        the enclosing triangle and flipping a flag on every boundary
-+        edge that is stepped over.
++        Work out which triangles are inside the polygon by walking in
++        from the enclosing triangle, flipping a flag every time a
++        boundary edge is stepped over.
 +        """
-+        inside = {index: False for index, tri in self.triangles.items() if max(tri) >= count}
-+        queue = deque(inside)
++        start = [
++            index
++            for index, triangle in self.triangles.items()
++            if not self.outer.isdisjoint(triangle)
++        ]
++        for index in self.triangles:
++            self.inside[index] = False
++        seen = set(start)
++        queue = deque(start)
 +        while len(queue) > 0:
 +            index = queue.popleft()
 +            a, b, c = self.triangles[index]
 +            for u, v in ((a, b), (b, c), (c, a)):
 +                neighbor = self.edges.get((v, u))
-+                if neighbor is None or neighbor in inside:
++                if neighbor is None or neighbor in seen:
 +                    continue
-+                edge = (u, v) if u < v else (v, u)
-+                inside[neighbor] = inside[index] != (edge in boundary)
++                seen.add(neighbor)
++                self.inside[neighbor] = self.inside[index] != (_edge(u, v) in boundary)
 +                queue.append(neighbor)
++
++    def faces(self) -> list:
++        """
++        The triangles which are inside the polygon and have real area.
++        """
 +        return [
 +            triangle
 +            for index, triangle in self.triangles.items()
-+            if inside.get(index, False)
++            if self.inside[index]
++            and self.outer.isdisjoint(triangle)
++            and self.orient(*triangle) > self._area
 +        ]
++
++    def facing(self, segment: tuple) -> set:
++        """
++        The vertices facing a segment, which are the only ones able to
++        encroach on it once the mesh is Delaunay.
++        """
++        found = set()
++        for a, b in (segment, segment[::-1]):
++            vertex = self.apex(a, b)
++            if vertex is not None and vertex not in self.outer:
++                found.add(vertex)
++        return found
++
++    def encroached(self, segment: tuple, point) -> bool:
++        """
++        Check if a point falls inside the circle which has the segment
++        as its diameter.
++        """
++        a = self.points[segment[0]]
++        b = self.points[segment[1]]
++        return (a[0] - point[0]) * (b[0] - point[0]) + (a[1] - point[1]) * (
++            b[1] - point[1]
++        ) < -self._area
++
++    def split(self, segment: tuple, fixed: set) -> None:
++        """
++        Cut a fixed segment in half, replacing it with its two halves
++        so the shape of the boundary is preserved exactly.
++        """
++        a = self.points[segment[0]]
++        b = self.points[segment[1]]
++        middle = len(self.points)
++        self.points.append(((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0))
++        fixed.discard(segment)
++        fixed.add(_edge(segment[0], middle))
++        fixed.add(_edge(middle, segment[1]))
++        self.insert(middle, frozenset(fixed))
++
++    def poor(self, ratio, max_area):
++        """
++        The triangle inside the polygon which misses the quality
++        target by the most, or None when they all meet it.
++        """
++        worst = None
++        score = 1.0
++        for index, triangle in self.triangles.items():
++            if not self.inside[index] or not self.outer.isdisjoint(triangle):
++                continue
++            a, b, c = (self.points[vertex] for vertex in triangle)
++            area = _orient(a, b, c) / 2.0
++            if area <= self._area:
++                continue
++            sides = (
++                math.hypot(b[0] - a[0], b[1] - a[1]),
++                math.hypot(c[0] - b[0], c[1] - b[1]),
++                math.hypot(a[0] - c[0], a[1] - c[1]),
++            )
++            current = 0.0
++            if max_area is not None:
++                current = area / max_area
++            if ratio is not None:
++                # circumradius over the shortest side
++                shape = sides[0] * sides[1] * sides[2] / (4.0 * area * min(sides))
++                current = max(current, shape / ratio)
++            if current > score:
++                worst = triangle
++                score = current
++        return worst
++
++    def encroaching(self, fixed: set):
++        """
++        A fixed segment which already has a vertex inside its
++        diametral circle, or None when there is none.
++        """
++        for segment in sorted(fixed):
++            for vertex in self.facing(segment):
++                if self.encroached(segment, self.points[vertex]):
++                    return segment
++        return None
++
++    def refine(self, fixed: set, min_angle, max_area, budget: int) -> None:
++        """
++        Add vertices until every triangle inside the polygon meets the
++        quality targets, splitting boundary segments rather than ever
++        placing a vertex across one.
++        """
++        ratio = None
++        if min_angle is not None:
++            ratio = 1.0 / (2.0 * math.sin(math.radians(min_angle)))
++
++        added = 0
++        while added < budget:
++            # an encroached segment has to be split before anything else
++            segment = self.encroaching(fixed)
++            if segment is not None:
++                self.split(segment, fixed)
++                added += 1
++                continue
++
++            triangle = self.poor(ratio, max_area)
++            if triangle is None:
++                return
++            center = _circumcenter(*(self.points[vertex] for vertex in triangle))
++            if center is None:
++                return
++
++            # a circumcenter which would land outside the polygon always
++            # encroaches a boundary segment, so split those instead
++            blocked = [s for s in sorted(fixed) if self.encroached(s, center)]
++            if len(blocked) > 0:
++                for segment in blocked:
++                    if segment in fixed:
++                        self.split(segment, fixed)
++                        added += 1
++                continue
++
++            seed = self.locate(center)
++            if seed is None or not self.inside[seed]:
++                return
++            self.points.append(center)
++            self.insert(len(self.points) - 1, frozenset(fixed))
++            added += 1
++
++        raise ValueError("refinement did not converge, try a larger quality target")
 +
 +
 +def _rings_to_points(rings: Sequence) -> tuple:
 +    """
-+    Flatten closed rings into a single array of unique points and
-+    the index of every ring segment.
++    Flatten closed rings into a single list of unique points and the
++    index pairs of every ring segment.
 +
 +    Parameters
 +    ----------
 +    rings
-+      Sequence of (n, 2) float, the first is the exterior.
++      Sequence of (n, 2) float, the first of which is the exterior.
 +
 +    Returns
 +    -------
 +    points
-+      (m, 2) float64, every ring vertex exactly once.
++      List of (x, y) tuples, every ring vertex exactly once.
 +    segments
 +      Set of index pairs, one per ring segment.
 +    """
@@ -405,69 +647,89 @@ index 00000000..2fbbe2c5
 +        if len(indexes) < 3:
 +            continue
 +        for offset, index in enumerate(indexes):
-+            other = indexes[(offset + 1) % len(indexes)]
-+            segments.add((index, other) if index < other else (other, index))
++            segments.add(_edge(index, indexes[(offset + 1) % len(indexes)]))
 +
 +    return points, segments
 +
 +
 +def constrained_delaunay(
 +    rings: Sequence,
++    min_angle: Number | None = None,
++    max_area: Number | None = None,
 +) -> tuple[NDArray[float64], NDArray[int64]]:
 +    """
-+    Triangulate a polygon with holes without adding any new vertices.
++    Triangulate a polygon with holes.
 +
-+    Every ring segment is an edge of the result and every edge which
-+    isn't a ring segment is locally Delaunay, which keeps the triangles
-+    as well shaped as possible for the given vertices.
++    Every ring segment is covered by edges of the result and every edge
++    which isn't part of a ring segment is locally Delaunay, which keeps
++    the triangles as well shaped as the vertices allow. Passing a
++    quality target adds vertices until that target is met.
 +
 +    Parameters
 +    ----------
 +    rings
-+      Sequence of (n, 2) float closed rings, the first of which is
-+      the exterior and the rest of which are holes.
++      Sequence of (n, 2) float closed rings, the first of which is the
++      exterior and the rest of which are holes.
++    min_angle
++      If passed, no triangle will have an angle smaller than this many
++      degrees.
++    max_area
++      If passed, no triangle will be larger than this.
 +
 +    Returns
 +    -------
 +    vertices
-+      (m, 2) float64 points, the unique vertices of the passed rings.
++      (m, 2) float64 points.
 +    faces
 +      (t, 3) int64 indexes of counter-clockwise wound triangles.
 +    """
++    if min_angle is not None and not 0.0 < min_angle <= _MAX_ANGLE:
++        raise ValueError(f"`min_angle` must be between 0 and {_MAX_ANGLE} degrees")
++    if max_area is not None and max_area <= 0.0:
++        raise ValueError("`max_area` must be greater than zero")
++
 +    points, segments = _rings_to_points(rings)
 +    count = len(points)
 +    if count < 3:
 +        return np.zeros((0, 2), dtype=float64), np.zeros((0, 3), dtype=int64)
 +
 +    array = np.array(points, dtype=float64)
-+    center = (array.min(axis=0) + array.max(axis=0)) / 2.0
-+    radius = max(float(np.abs(array - center).max()), 1.0) * _SCALE
++    middle = (array.min(axis=0) + array.max(axis=0)) / 2.0
++    radius = max(float(np.abs(array - middle).max()), 1.0) * _SCALE
 +    scale = max(float(np.abs(array).max()), 1.0)
 +
 +    # an enclosing triangle which is dropped once the mesh is done
 +    mesh = _Mesh(list(points), scale)
 +    for angle in (90.0, 210.0, 330.0):
-+        radians = np.radians(angle)
++        radians = math.radians(angle)
++        mesh.outer.add(len(mesh.points))
 +        mesh.points.append(
 +            (
-+                float(center[0] + radius * 2.0 * np.cos(radians)),
-+                float(center[1] + radius * 2.0 * np.sin(radians)),
++                float(middle[0] + radius * 2.0 * math.cos(radians)),
++                float(middle[1] + radius * 2.0 * math.sin(radians)),
 +            )
 +        )
 +    mesh.add(count, count + 1, count + 2)
 +
 +    for vertex in range(count):
 +        mesh.insert(vertex)
-+    for a, b in segments:
++    for a, b in sorted(segments):
 +        mesh.constrain(a, b)
-+    mesh.delaunay(segments, count)
++    mesh.delaunay(segments)
++    mesh.classify(segments)
 +
-+    faces = [
-+        triangle
-+        for triangle in mesh.enclosed(segments, count)
-+        if max(triangle) < count and mesh.orient(*triangle) > mesh._area
-+    ]
++    if min_angle is not None or max_area is not None:
++        mesh.refine(segments, min_angle, max_area, count * _MAX_ADDED)
++        mesh.delaunay(segments)
++
++    faces = mesh.faces()
 +    if len(faces) == 0:
 +        return array, np.zeros((0, 3), dtype=int64)
 +
-+    return array, np.array(faces, dtype=int64)
++    # drop the enclosing triangle and anything which ended up unused
++    used = sorted({vertex for triangle in faces for vertex in triangle})
++    remap = {vertex: offset for offset, vertex in enumerate(used)}
++    return (
++        np.array([mesh.points[vertex] for vertex in used], dtype=float64),
++        np.array([[remap[v] for v in face] for face in faces], dtype=int64),
++    )
