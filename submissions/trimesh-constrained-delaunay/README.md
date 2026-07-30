@@ -11,7 +11,7 @@
 
 ## Files
 
-- `problem.md` — problem description, 195 words, ready to paste
+- `problem.md` — problem description, 196 words, ready to paste
 - `test.patch` — `test.sh` + `tests/test_delaunay_fe0bc1.py`
 - `solution.patch` — `trimesh/triangulation.py` + `trimesh/creation.py` wiring
 - `Dockerfile` — build environment
@@ -179,3 +179,13 @@ An area target is always reachable, since any triangle can be cut down
 further, which makes it a fair demand on any domain at all. The minimum angle
 is set at ten degrees, which every corner in these shapes is wide enough to
 allow without the boundary moving. The reference passes all thirty-six.
+
+## Exception type
+
+The suite asserts `ValueError` for a rejected quality target, while the
+description previously said only that such cases raise. The description now
+names `ValueError`, which is what `triangulate_polygon` already raises for its
+existing failure, "No available triangulation engine!", so the type follows
+the convention already in the file rather than adding a new one. Naming it
+keeps the check meaningful: a solution which returns quietly, or raises
+something unrelated to the argument being wrong, still fails.

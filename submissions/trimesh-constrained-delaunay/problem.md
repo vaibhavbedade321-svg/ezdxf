@@ -4,4 +4,4 @@ It returns counter-clockwise triangles which exactly cover the polygon, and none
 
 Both hold however awkward the input. The result depends on the polygon, not on how its rings are written: rotating a ring's start or reversing its winding gives the identical triangles. The geometric decisions are exact, so points a rounding error away from collinear, or from sharing a circle, still come out on the correct side.
 
-`min_angle` in degrees and `max_area` add vertices until no triangle is sharper or larger, leaving the boundary in place. A `min_angle` outside `0 < min_angle <= 30`, a non-positive `max_area`, either target on another engine, or either with `force_vertices`, all raise.
+`min_angle` in degrees and `max_area` add vertices until no triangle is sharper or larger, leaving the boundary in place. A `min_angle` outside `0 < min_angle <= 30`, a non-positive `max_area`, either target on another engine, or either with `force_vertices`, all raise `ValueError`.
