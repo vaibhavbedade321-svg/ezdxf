@@ -21,8 +21,8 @@
 | Patch | NBNCC lines |
 | --- | --- |
 | `solution.patch` | 486 |
-| `test.patch` | 561 |
-| combined | 1047 |
+| `test.patch` | 595 |
+| combined | 1081 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -32,8 +32,8 @@ Fresh worktree at the base commit, patches applied with `git apply`:
 
 | State | `./test.sh base` | `./test.sh new` |
 | --- | --- | --- |
-| `test.patch` only | 61 passed | 29 failed |
-| `test.patch` + `solution.patch` | 61 passed | 29 passed |
+| `test.patch` only | 61 passed | 30 failed |
+| `test.patch` + `solution.patch` | 61 passed | 30 passed |
 
 Both patches pass `git apply --check`. The new suite runs in under 3s, the
 base suite in about 30s.
@@ -161,3 +161,21 @@ half way along an edge has to land somewhere new even a long way out.
 
 The reference passes all forty-one concave polygons at both scales and all
 forty-eight refinement combinations.
+
+## Refinement domain coverage
+
+A third adjudication found a candidate whose area refinement crashed on a
+plain triangle, `Polygon([(0,0),(4,0),(0,3)])` with `max_area=1.0`. Every
+refinement case in the suite used a rectangle, an L or a U, so the boundary
+splitting was never asked to work on a domain with only three sides.
+
+`test_refinement_domain_shapes` widens it from specific shapes to a class:
+four triangles, a rectangle, a regular pentagon and hexagon, an L, a big L, a
+plus, a square with a hole and a triangle with a triangular hole. Each is
+refined to a minimum angle and to two area targets expressed as a fraction of
+its own area, thirty-six runs in all.
+
+An area target is always reachable, since any triangle can be cut down
+further, which makes it a fair demand on any domain at all. The minimum angle
+is set at ten degrees, which every corner in these shapes is wide enough to
+allow without the boundary moving. The reference passes all thirty-six.

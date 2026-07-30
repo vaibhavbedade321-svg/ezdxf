@@ -55,10 +55,10 @@ index 00000000..0bb0241f
 +exit $?
 diff --git a/tests/test_delaunay_fe0bc1.py b/tests/test_delaunay_fe0bc1.py
 new file mode 100644
-index 00000000..1fd10913
+index 00000000..4c06bc81
 --- /dev/null
 +++ b/tests/test_delaunay_fe0bc1.py
-@@ -0,0 +1,701 @@
+@@ -0,0 +1,747 @@
 +"""
 +Tests for the built-in constrained Delaunay triangulation engine.
 +"""
@@ -612,6 +612,52 @@ index 00000000..1fd10913
 +                assert polygon.is_valid and polygon.is_simple
 +                _, faces = self.check(polygon)
 +                assert len(faces) == len(coords) - 2
++
++    def test_refinement_domain_shapes(self):
++        # refinement has to work whatever the domain looks like, not just on
++        # the right-angled ones: a triangle gives the boundary splitting the
++        # least room to work with
++        def regular(count, radius):
++            step = np.pi * 2 / count
++            return [
++                (radius * np.cos(step * i), radius * np.sin(step * i))
++                for i in range(count)
++            ]
++
++        domains = [
++            ([(0, 0), (4, 0), (0, 3)], None),
++            ([(0, 0), (5, 0), (0, 5)], None),
++            ([(0, 0), (10, 0), (5, 2)], None),
++            ([(0, 0), (1, 0), (0.5, 0.8660254037844386)], None),
++            ([(0, 0), (6, 0), (6, 4), (0, 4)], None),
++            (regular(5, 3.0), None),
++            (regular(6, 3.0), None),
++            ([(0, 0), (3, 0), (3, 1), (1, 1), (1, 3), (0, 3)], None),
++            ([(0, 0), (8, 0), (8, 1), (3, 1), (3, 5), (0, 5)], None),
++            (
++                [(1, 0), (2, 0), (2, 1), (3, 1), (3, 2), (2, 2), (2, 3),
++                 (1, 3), (1, 2), (0, 2), (0, 1), (1, 1)],
++                None,
++            ),
++            ([(0, 0), (9, 0), (9, 9), (0, 9)], [[(3, 3), (3, 6), (6, 6), (6, 3)]]),
++            ([(0, 0), (12, 0), (0, 12)], [[(2, 2), (5, 2), (2, 5)]]),
++        ]
++
++        for coords, holes in domains:
++            polygon = g.Polygon(coords, holes)
++            assert polygon.is_valid
++
++            # every corner of these is wide enough for this angle to be
++            # reachable without moving the boundary
++            _, _, triangles = self.refined(polygon, min_angle=10.0)
++            assert self.smallest_angle(triangles) >= 10.0 - 1e-6
++
++            # an area target is reachable on any domain at all, since a
++            # triangle can always be cut down further
++            for divisor in [8.0, 40.0]:
++                max_area = polygon.area / divisor
++                _, _, triangles = self.refined(polygon, max_area=max_area)
++                assert signed_area(triangles).max() <= max_area + 1e-9
 +
 +    def test_refinement_far_from_origin(self):
 +        # the same shape refined at the origin and a long way from it: the
