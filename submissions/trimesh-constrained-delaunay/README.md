@@ -11,7 +11,7 @@
 
 ## Files
 
-- `problem.md` — problem description, 198 words, ready to paste
+- `problem.md` — problem description, 190 words, ready to paste
 - `test.patch` — `test.sh` + `tests/test_delaunay_fe0bc1.py`
 - `solution.patch` — `trimesh/triangulation.py` + `trimesh/creation.py` wiring
 - `Dockerfile` — build environment
@@ -21,8 +21,8 @@
 | Patch | NBNCC lines |
 | --- | --- |
 | `solution.patch` | 486 |
-| `test.patch` | 593 |
-| combined | 1079 |
+| `test.patch` | 620 |
+| combined | 1106 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -210,3 +210,34 @@ forty-eight by dropping duplicated target and offset pairings. Every shape and
 every offset is still covered, so nothing the earlier adjudications found is
 reopened, but a correct implementation which is simply slower than the
 reference is no longer at risk of running out of wall clock.
+
+## Revision response
+
+**P6, prescriptive refinement.** The sentence naming midpoint splitting,
+diametral circles and circumcenter substitution is gone. The paragraph now
+states outcomes only: the targets are met, refinement finishes for any target
+in range, an added boundary vertex lies on the boundary it came from, and the
+shared edges which are not boundary stay locally Delaunay. Nothing in the
+description names an algorithm, so the accompanying obligation to test those
+specific steps disappears with it.
+
+**Local Delaunay after refinement.** The refined helper now runs the same
+exact circle test as the plain one. A piece of boundary is the only edge used
+by a single face, so anything shared by two faces is interior and is checked,
+which excludes split boundary subsegments without needing to track them.
+
+**Interior ring invariance.** The exact triangle set is now compared across
+every rotation and both windings of a hole ring, crossed with every rotation
+of the exterior, rather than only comparing face counts.
+
+**Inclusive angle limit.** `min_angle=30` is accepted and its result checked
+against the thirty degree bound, and `min_angle=30.5` is rejected alongside
+the existing out-of-range cases.
+
+## Base commit currency
+
+Upstream is ahead of `a513c0e` and has touched `creation.py` in that window.
+The overlap is incidental, since adding an engine has to touch the engine
+list, and the feature has not shipped upstream. Rebasing onto a newer commit
+is possible if wanted; it needs the patches regenerated and the full cycle
+rerun, and nothing in the review depends on it.

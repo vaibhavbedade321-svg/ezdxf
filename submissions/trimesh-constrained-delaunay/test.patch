@@ -55,10 +55,10 @@ index 00000000..0bb0241f
 +exit $?
 diff --git a/tests/test_delaunay_fe0bc1.py b/tests/test_delaunay_fe0bc1.py
 new file mode 100644
-index 00000000..946cda70
+index 00000000..f6c5458f
 --- /dev/null
 +++ b/tests/test_delaunay_fe0bc1.py
-@@ -0,0 +1,745 @@
+@@ -0,0 +1,779 @@
 +"""
 +Tests for the built-in constrained Delaunay triangulation engine.
 +"""
@@ -487,6 +487,23 @@ index 00000000..946cda70
 +        for centroid in triangles.mean(axis=1):
 +            assert grown.contains(g.Point(centroid))
 +
++        # refinement may split a ring segment, and a piece of the boundary
++        # is the one thing used by a single face, so anything shared by two
++        # faces is interior and still has to be locally Delaunay
++        used = {}
++        apex = {}
++        for a, b, c in faces:
++            for u, w, o in ((a, b, c), (b, c, a), (c, a, b)):
++                apex[(u, w)] = o
++                edge = (min(u, w), max(u, w))
++                used[edge] = used.get(edge, 0) + 1
++        for (u, w), near in apex.items():
++            far = apex.get((w, u))
++            if far is None or used[(min(u, w), max(u, w))] != 2:
++                continue
++            value = in_circle(vertices[u], vertices[w], vertices[near], vertices[far])
++            assert value <= 0, "refined edge is not locally Delaunay"
++
 +        return vertices, faces, triangles
 +
 +    def smallest_angle(self, triangles):
@@ -549,12 +566,16 @@ index 00000000..946cda70
 +
 +    def test_bad_quality_arguments(self):
 +        polygon = g.Polygon([(0, 0), (4, 0), (4, 4), (0, 4)])
-+        # a target inside the supported range is accepted
++        # a target inside the supported range is accepted, and so is the
++        # inclusive end of it
 +        self.refined(polygon, min_angle=20.0, max_area=1.0)
++        _, _, triangles = self.refined(polygon, min_angle=30.0)
++        assert self.smallest_angle(triangles) >= 30.0 - 1e-6
 +
 +        for kwargs in [
 +            {"min_angle": 0.0},
 +            {"min_angle": -5.0},
++            {"min_angle": 30.5},
 +            {"min_angle": 45.0},
 +            {"max_area": 0.0},
 +            {"max_area": -1.0},
@@ -748,6 +769,19 @@ index 00000000..946cda70
 +                    polygon = g.Polygon(ring, holes)
 +                    seen.add(triangle_set(*self.check(polygon)))
 +            assert len(seen) == 1, "ring order changed the triangulation"
++
++        # the same has to hold for an interior ring written differently
++        exterior = [(0, 0), (9, 0), (9, 9), (0, 9)]
++        hole = [(3, 3), (3, 6), (6, 6), (6, 3)]
++        seen = set()
++        for start in range(len(hole)):
++            rolled = hole[start:] + hole[:start]
++            for ring in (rolled, rolled[::-1]):
++                for offset in range(len(exterior)):
++                    outer = exterior[offset:] + exterior[:offset]
++                    polygon = g.Polygon(outer, [ring])
++                    seen.add(triangle_set(*self.check(polygon)))
++        assert len(seen) == 1, "hole ring order changed the triangulation"
 +
 +    def test_near_degenerate(self):
 +        # vertices a single ULP off a shared circle, where a rounded
