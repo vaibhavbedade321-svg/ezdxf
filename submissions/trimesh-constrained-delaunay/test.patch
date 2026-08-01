@@ -55,10 +55,10 @@ index 00000000..0bb0241f
 +exit $?
 diff --git a/tests/test_delaunay_fe0bc1.py b/tests/test_delaunay_fe0bc1.py
 new file mode 100644
-index 00000000..e622d05c
+index 00000000..e1e7fb91
 --- /dev/null
 +++ b/tests/test_delaunay_fe0bc1.py
-@@ -0,0 +1,845 @@
+@@ -0,0 +1,874 @@
 +"""
 +Tests for the built-in constrained Delaunay triangulation engine.
 +"""
@@ -497,10 +497,23 @@ index 00000000..e622d05c
 +        got = {key_of(p) for p in vertices}
 +        assert want.issubset(got)
 +
-+        # no face may poke outside the polygon
-+        grown = polygon.buffer(1e-9)
++        # no face may poke outside the polygon. A tiny buffer collapses to
++        # nothing at large coordinates, so shift the shape next to the origin
++        # first and allow for the float spacing at the original magnitude
++        origin = polygon.bounds[0], polygon.bounds[1]
++        local = g.Polygon(
++            [(x - origin[0], y - origin[1]) for x, y in polygon.exterior.coords],
++            [
++                [(x - origin[0], y - origin[1]) for x, y in ring.coords]
++                for ring in polygon.interiors
++            ],
++        )
++        spacing = max(1.0, max(abs(b) for b in polygon.bounds)) * 1e-12
++        grown = local.buffer(spacing)
 +        for centroid in triangles.mean(axis=1):
-+            assert grown.contains(g.Point(centroid))
++            assert grown.contains(
++                g.Point(centroid[0] - origin[0], centroid[1] - origin[1])
++            )
 +
 +        # refinement may split a ring segment, and a piece of the boundary
 +        # is the one thing used by a single face, so anything shared by two
@@ -700,6 +713,22 @@ index 00000000..e622d05c
 +                _, faces = self.check(polygon)
 +                assert len(faces) == len(coords) - 2
 +
++    def test_refinement_of_small_features(self):
++        # what matters is the size of the shape next to the size of its
++        # coordinates, so a small feature a moderate way out is as hard as
++        # a large one very far out
++        for side, offset in [
++            (0.004, 1e5),
++            (0.04, 1e6),
++            (0.004, 1e6),
++            (0.5, 1e9),
++        ]:
++            coords = [(0, 0), (side, 0), (side, side), (0, side)]
++            polygon = g.Polygon([(x + offset, y + offset) for x, y in coords])
++            max_area = side * side / 8.0
++            _, _, triangles = self.refined(polygon, max_area=max_area)
++            assert signed_area(triangles).max() <= max_area * (1.0 + 1e-9)
++
 +    def test_refinement_domain_shapes(self):
 +        # refinement has to work whatever the domain looks like, not just on
 +        # the right-angled ones: a triangle gives the boundary splitting the
@@ -762,7 +791,7 @@ index 00000000..e622d05c
 +        for coords in shapes:
 +            # every corner is a right angle or wider, so these targets are
 +            # reachable without moving the boundary
-+            for offset in [0.0, 1e3, 1e6, 1e7]:
++            for offset in [0.0, 1e3, 1e6, 1e8, 1e9]:
 +                polygon = g.Polygon([(x + offset, y + offset) for x, y in coords])
 +                for kwargs in targets:
 +                    _, faces, triangles = self.refined(polygon, **kwargs)

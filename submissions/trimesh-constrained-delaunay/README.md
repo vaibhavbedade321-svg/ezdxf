@@ -21,8 +21,8 @@
 | Patch | NBNCC lines |
 | --- | --- |
 | `solution.patch` | 486 |
-| `test.patch` | 672 |
-| combined | 1158 |
+| `test.patch` | 695 |
+| combined | 1181 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -32,8 +32,8 @@ Fresh worktree at the base commit, patches applied with `git apply`:
 
 | State | `./test.sh base` | `./test.sh new` |
 | --- | --- | --- |
-| `test.patch` only | 61 passed | 31 failed |
-| `test.patch` + `solution.patch` | 61 passed | 31 passed |
+| `test.patch` only | 61 passed | 32 failed |
+| `test.patch` + `solution.patch` | 61 passed | 32 passed |
 
 Both patches pass `git apply --check`. The new suite runs in under 3s, the
 base suite in about 30s.
@@ -277,3 +277,29 @@ polygon is checked to give no faces, folded into the degenerate test so it
 still fails without the solution. And the shared helper now asserts the engine
 returns real arrays with the shapes and kinds the other engines return,
 matching `check_triangulation` in the repository's own creation tests.
+
+## Translation sensitivity coverage
+
+An adjudication found a candidate whose circumcenter was computed in absolute
+coordinates, squaring values of about 1e8 before subtracting them. The
+cancellation puts the constructed point a whole unit out in a four unit
+domain, refinement then splits boundary segments down to neighbouring floats,
+and constraint recovery gives up. The offsets in the suite stopped at 1e7, one
+decade short.
+
+`test_refinement_far_from_origin` now runs offsets up to 1e9, which brackets
+both reported thresholds. `test_refinement_of_small_features` comes at the
+same bug from the other side, since what actually matters is the size of the
+shape next to the size of its coordinates: a four millimetre square a hundred
+metres out, in millimetres, is as hard as a large shape very far away and
+turns up at an ordinary offset.
+
+Confirmed to discriminate rather than assumed: replacing the reference's
+circumcenter with the absolute-coordinate form fails both new tests while the
+origin-based domain test still passes, which is the reported signature. The
+reference is stable to 1e12, returning the same 128 faces at every offset.
+
+The containment check in the refinement helper needed fixing too. A 1e-9
+buffer collapses to an empty polygon at large coordinates, so the shape is
+now shifted next to the origin before buffering and the tolerance follows the
+float spacing at the original magnitude.
