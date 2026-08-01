@@ -55,10 +55,10 @@ index 00000000..0bb0241f
 +exit $?
 diff --git a/tests/test_delaunay_fe0bc1.py b/tests/test_delaunay_fe0bc1.py
 new file mode 100644
-index 00000000..f6c5458f
+index 00000000..105ab43a
 --- /dev/null
 +++ b/tests/test_delaunay_fe0bc1.py
-@@ -0,0 +1,779 @@
+@@ -0,0 +1,818 @@
 +"""
 +Tests for the built-in constrained Delaunay triangulation engine.
 +"""
@@ -607,21 +607,60 @@ index 00000000..f6c5458f
 +                    )
 +
 +    def test_refined_boundary_is_preserved(self):
-+        # refinement may split a ring segment but never move the boundary
-+        polygon = g.Polygon([(0, 0), (12, 0), (12, 1), (0, 1)])
-+        vertices, faces, _ = self.refined(polygon, min_angle=25.0)
++        # refinement may split a ring segment but never move the boundary,
++        # and a hole is as much a boundary as the outside is
++        cases = [
++            (g.Polygon([(0, 0), (12, 0), (12, 1), (0, 1)]), {"min_angle": 25.0}, False),
++            (
++                g.Polygon(
++                    [(0, 0), (9, 0), (9, 9), (0, 9)],
++                    [[(3, 3), (3, 6), (6, 6), (6, 3)]],
++                ),
++                {"max_area": 1.5},
++                True,
++            ),
++            (
++                g.Polygon([(0, 0), (12, 0), (0, 12)], [[(2, 2), (5, 2), (2, 5)]]),
++                {"min_angle": 15.0},
++                False,
++            ),
++            (
++                g.Polygon(
++                    [(0, 0), (20, 0), (20, 20), (0, 20)],
++                    [[(8, 8), (8, 12), (12, 12), (12, 8)]],
++                ),
++                {"max_area": 4.0},
++                True,
++            ),
++        ]
 +
-+        boundary = {}
-+        for a, b, c in faces:
-+            for u, v in ((a, b), (b, c), (c, a)):
-+                edge = (min(u, v), max(u, v))
-+                boundary[edge] = boundary.get(edge, 0) + 1
-+        outline = [e for e, count in boundary.items() if count == 1]
++        for polygon, kwargs, splits_hole in cases:
++            vertices, faces, _ = self.refined(polygon, **kwargs)
 +
-+        # every edge used once lies along the outline of the polygon
-+        for u, v in outline:
-+            middle = g.Point((vertices[u] + vertices[v]) / 2.0)
-+            assert polygon.exterior.distance(middle) < 1e-9
++            counts = {}
++            for a, b, c in faces:
++                for u, v in ((a, b), (b, c), (c, a)):
++                    edge = (min(u, v), max(u, v))
++                    counts[edge] = counts.get(edge, 0) + 1
++            outline = [e for e, count in counts.items() if count == 1]
++
++            # an edge used by a single face is a piece of the boundary, so
++            # its middle has to sit on a ring, whichever ring that is
++            on_hole = 0
++            for u, v in outline:
++                middle = g.Point((vertices[u] + vertices[v]) / 2.0)
++                assert polygon.boundary.distance(middle) < 1e-9
++                if any(r.distance(middle) < 1e-9 for r in polygon.interiors):
++                    on_hole += 1
++
++            segments = sum(len(r.coords) - 1 for r in polygon.interiors)
++            if segments:
++                # the hole is still walled off by boundary edges
++                assert on_hole >= segments
++            if splits_hole:
++                # and here refinement had to cut the hole ring up, so the
++                # added vertices are on the hole rather than beside it
++                assert on_hole > segments
 +
 +    def test_concave_polygons(self):
 +        # plain concave polygons with fractional coordinates, the everyday

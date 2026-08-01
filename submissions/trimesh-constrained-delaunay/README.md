@@ -21,8 +21,8 @@
 | Patch | NBNCC lines |
 | --- | --- |
 | `solution.patch` | 486 |
-| `test.patch` | 620 |
-| combined | 1106 |
+| `test.patch` | 652 |
+| combined | 1138 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -241,3 +241,18 @@ The overlap is incidental, since adding an engine has to touch the engine
 list, and the feature has not shipped upstream. Rebasing onto a newer commit
 is possible if wanted; it needs the patches regenerated and the full cycle
 rerun, and nothing in the review depends on it.
+
+## Hole boundary preservation
+
+The boundary preservation test used to refine one rectangle and measure every
+single-use edge against the exterior ring only, so a refiner which pulled a
+hole out of shape had nothing checking it.
+
+It now runs four cases, three of them holed, and measures against
+`polygon.boundary`, which covers the interior rings as well as the outside.
+Two of the holed cases are chosen so refinement has to cut the hole ring up:
+the count of boundary edges lying on a hole comes out higher than the number
+of segments the hole started with, which is only possible if the added
+vertices landed on the hole itself rather than beside it. The remaining cases
+assert the weaker form, that the hole is still walled off by at least as many
+boundary edges as it had segments.
