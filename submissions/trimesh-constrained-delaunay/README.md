@@ -21,8 +21,8 @@
 | Patch | NBNCC lines |
 | --- | --- |
 | `solution.patch` | 486 |
-| `test.patch` | 652 |
-| combined | 1138 |
+| `test.patch` | 672 |
+| combined | 1158 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -32,8 +32,8 @@ Fresh worktree at the base commit, patches applied with `git apply`:
 
 | State | `./test.sh base` | `./test.sh new` |
 | --- | --- | --- |
-| `test.patch` only | 61 passed | 30 failed |
-| `test.patch` + `solution.patch` | 61 passed | 30 passed |
+| `test.patch` only | 61 passed | 31 failed |
+| `test.patch` + `solution.patch` | 61 passed | 31 passed |
 
 Both patches pass `git apply --check`. The new suite runs in under 3s, the
 base suite in about 30s.
@@ -256,3 +256,24 @@ of segments the hole started with, which is only possible if the added
 vertices landed on the hole itself rather than beside it. The remaining cases
 assert the weaker form, that the hole is still walled off by at least as many
 boundary edges as it had segments.
+
+## Fairness fix
+
+The hole boundary test required two of its cases to end up with more
+boundary edges on the hole than the hole started with. That pinned a
+refinement strategy rather than the contract: an implementation is free to
+reach an area target with interior points and leave the hole ring whole, and
+nothing in the description or the repository says otherwise.
+
+It is replaced by a measurement which does not care how the target was
+reached. Every edge used by a single face still has to sit on a ring, and the
+edges sitting on each ring have to add up to exactly that ring's length. A
+boundary which was moved, dented or left with a gap fails; a boundary which
+was split, or not split, passes either way.
+
+Three coverage suggestions were taken as well. Ring order independence is now
+checked with a quality target applied, not only on plain output. An empty
+polygon is checked to give no faces, folded into the degenerate test so it
+still fails without the solution. And the shared helper now asserts the engine
+returns real arrays with the shapes and kinds the other engines return,
+matching `check_triangulation` in the repository's own creation tests.
