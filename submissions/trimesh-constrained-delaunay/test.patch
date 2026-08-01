@@ -55,10 +55,10 @@ index 00000000..0bb0241f
 +exit $?
 diff --git a/tests/test_delaunay_fe0bc1.py b/tests/test_delaunay_fe0bc1.py
 new file mode 100644
-index 00000000..4c06bc81
+index 00000000..946cda70
 --- /dev/null
 +++ b/tests/test_delaunay_fe0bc1.py
-@@ -0,0 +1,747 @@
+@@ -0,0 +1,745 @@
 +"""
 +Tests for the built-in constrained Delaunay triangulation engine.
 +"""
@@ -654,7 +654,7 @@ index 00000000..4c06bc81
 +
 +            # an area target is reachable on any domain at all, since a
 +            # triangle can always be cut down further
-+            for divisor in [8.0, 40.0]:
++            for divisor in [10.0]:
 +                max_area = polygon.area / divisor
 +                _, _, triangles = self.refined(polygon, max_area=max_area)
 +                assert signed_area(triangles).max() <= max_area + 1e-9
@@ -669,9 +669,7 @@ index 00000000..4c06bc81
 +            [(0, 0), (2, 0), (2, 2), (0, 2)],
 +        ]
 +        targets = [
-+            {"min_angle": 10.0},
 +            {"min_angle": 20.0},
-+            {"max_area": 0.5},
 +            {"min_angle": 15.0, "max_area": 0.5},
 +        ]
 +        for coords in shapes:

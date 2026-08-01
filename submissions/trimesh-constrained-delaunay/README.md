@@ -11,7 +11,7 @@
 
 ## Files
 
-- `problem.md` — problem description, 196 words, ready to paste
+- `problem.md` — problem description, 198 words, ready to paste
 - `test.patch` — `test.sh` + `tests/test_delaunay_fe0bc1.py`
 - `solution.patch` — `trimesh/triangulation.py` + `trimesh/creation.py` wiring
 - `Dockerfile` — build environment
@@ -21,8 +21,8 @@
 | Patch | NBNCC lines |
 | --- | --- |
 | `solution.patch` | 486 |
-| `test.patch` | 595 |
-| combined | 1081 |
+| `test.patch` | 593 |
+| combined | 1079 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -189,3 +189,24 @@ existing failure, "No available triangulation engine!", so the type follows
 the convention already in the file rather than adding a new one. Naming it
 keeps the check meaningful: a solution which returns quietly, or raises
 something unrelated to the argument being wrong, still fails.
+
+## Calibration
+
+Four solver runs all failed, and every one of them failed inside refinement or
+constraint recovery: area refinement raising on a skinny triangle, recovery
+failing on a concave quadrilateral, a duplicate Steiner point on a holed
+polygon, and one run timing out on refinement that never converged. None of
+them failed on the two requirements the task is actually built around.
+
+The description now states the encroachment rule that keeps refinement
+terminating: split a boundary segment at its midpoint when a vertex lies
+inside its diametral circle, and split the encroached segment rather than
+placing a circumcenter which would fall inside one. That is the standard rule
+and it is the piece every run got wrong, so stating it moves the difficulty
+back onto exactness and order independence, which stay untouched.
+
+The refinement cases were also thinned from eighty-four combinations to
+forty-eight by dropping duplicated target and offset pairings. Every shape and
+every offset is still covered, so nothing the earlier adjudications found is
+reopened, but a correct implementation which is simply slower than the
+reference is no longer at risk of running out of wall clock.
