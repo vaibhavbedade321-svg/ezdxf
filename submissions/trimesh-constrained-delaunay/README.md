@@ -21,8 +21,8 @@
 | Patch | NBNCC lines |
 | --- | --- |
 | `solution.patch` | 486 |
-| `test.patch` | 695 |
-| combined | 1181 |
+| `test.patch` | 696 |
+| combined | 1182 |
 
 Counted as added lines less blank, comment and docstring lines.
 
@@ -303,3 +303,23 @@ The containment check in the refinement helper needed fixing too. A 1e-9
 buffer collapses to an empty polygon at large coordinates, so the shape is
 now shifted next to the origin before buffering and the tolerance follows the
 float spacing at the original magnitude.
+
+## Confirming the translation coverage bites
+
+The translation report arrived a second time against the earlier bundle. The
+coverage was already in place, and it was measured rather than assumed by
+swapping the reference circumcenter for the absolute coordinate form the
+report describes and running the whole suite against it:
+
+| probe | with the absolute coordinate form |
+| --- | --- |
+| whole suite | 2 failed, 30 passed |
+| 4 unit square, `max_area=0.2`, offset 1e8 | `ValueError` |
+| 4 unit square, `max_area=1.0`, offset 1e9 | `ValueError` |
+
+The two failures are `test_refinement_far_from_origin` and
+`test_refinement_of_small_features`, which are the two tests added for this,
+so the coverage lands where it was aimed. The twelve by one strip named in the
+report has now been added to the far from origin shapes as well, since a long
+thin domain needs the most added vertices and so feels a badly placed one
+soonest.
