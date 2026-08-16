@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..e432727
+index 0000000..3213fbc
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1195 @@
+@@ -0,0 +1,1232 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1199,6 +1199,43 @@ index 0000000..e432727
 +    for enum in (griffe.Bump, griffe.ChangeKind):
 +        for member in enum:
 +            assert member.value == member.name.lower()
++
++
++def test_removed_class_base_is_breaking_not_expanded() -> None:
++    # Only *added* bases are a compatible gain; losing one breaks callers that
++    # relied on the inherited surface.
++    old = (
++        'class Mixin:\n    """D."""\n\n'
++        'class Tool(Mixin):\n    """D."""\n\n__all__ = ["Mixin", "Tool"]\n'
++    )
++    new = (
++        'class Mixin:\n    """D."""\n\n'
++        'class Tool:\n    """D."""\n\n__all__ = ["Mixin", "Tool"]\n'
++    )
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert not report.expansions
++    assert "Tool" in {change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)}
++
++
++def test_deprecated_nested_member_is_reported_under_its_exported_path() -> None:
++    # The decorator lands on a method of a class defined in a submodule and
++    # re-exported from the package root, so the path follows the export.
++    old = {
++        "__init__.py": 'from semold.inner import Widget\n\n__all__ = ["Widget"]\n',
++        "inner.py": 'class Widget:\n    """D."""\n\n    def draw(self):\n        """D."""\n',
++    }
++    new = {
++        "__init__.py": 'from semnew.inner import Widget\n\n__all__ = ["Widget"]\n',
++        "inner.py": (
++            'from warnings import deprecated\n\n'
++            'class Widget:\n    """D."""\n\n'
++            '    @deprecated("soon")\n    def draw(self):\n        """D."""\n'
++        ),
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.deprecations == ["Widget.draw"]
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..dcf581f
