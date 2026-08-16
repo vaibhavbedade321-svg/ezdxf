@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..8957369
+index 0000000..d37ffdb
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1070 @@
+@@ -0,0 +1,1160 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1074,6 +1074,96 @@ index 0000000..8957369
 +    # Options really reach the loader rather than being swallowed.
 +    with pytest.raises(TypeError):
 +        griffe.bump_between("semverpkg", old_path, new_path, definitely_not_an_option=True)
++
++
++def test_parameter_gaining_an_annotation_is_patch() -> None:
++    # The compatible-gain list covers an object's own return or type
++    # annotation, never a parameter's, so this falls to the catch-all.
++    report = _bump("def tool(a): ...\n", "def tool(a: int): ...\n")
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.expansions
++    assert not report.changes
++
++
++def test_parameter_losing_an_annotation_is_patch() -> None:
++    report = _bump("def tool(a: int): ...\n", "def tool(a): ...\n")
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.changes
++
++
++def test_parameter_annotation_change_is_patch() -> None:
++    report = _bump("def tool(a: int): ...\n", "def tool(a: str): ...\n")
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.changes
++
++
++def test_return_annotation_change_is_patch() -> None:
++    # Declaring a return annotation that was missing is a gain; replacing one
++    # that was already there is not.
++    report = _bump("def tool(a) -> int: ...\n", "def tool(a) -> str: ...\n")
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.expansions
++
++
++def test_return_annotation_newly_declared_is_minor() -> None:
++    report = _bump("def tool(a): ...\n", "def tool(a) -> int: ...\n")
++    assert report.bump is griffe.Bump.MINOR
++    assert report.expansions == ["tool"]
++
++
++def test_decorator_other_than_deprecated_is_patch() -> None:
++    old = "def tool(a): ...\n"
++    new = "import functools\n\n\n@functools.cache\ndef tool(a): ...\n"
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.deprecations
++    assert not report.changes
++
++
++def test_added_private_object_is_patch() -> None:
++    old = "def tool(a): ...\n"
++    new = "def tool(a): ...\n\n\ndef _helper(): ...\n"
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.additions
++
++
++def test_breaking_object_is_not_also_deprecated() -> None:
++    old = "def tool(a, b): ...\n"
++    new = "from warnings import deprecated\n\n\n@deprecated('gone')\ndef tool(a): ...\n"
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert not report.deprecations
++    assert {change.kind for change in report.changes} == {griffe.ChangeKind.BREAKING}
++
++
++def test_deprecated_and_expanded_are_both_reported() -> None:
++    # Only breakage suppresses the other kinds for a path.
++    old = "def tool(a): ...\n"
++    new = "from warnings import deprecated\n\n\n@deprecated('soon')\ndef tool(a, b=1): ...\n"
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.deprecations == ["tool"]
++    assert report.expansions == ["tool"]
++
++
++@pytest.mark.parametrize(
++    "version",
++    ["01.2.3", "1.02.3", "1.2.03", "1.2.3rc1", "1.2", "1.2.3.4", "v1.2.3", "", "a.b.c", " 1.2.3 "],
++)
++def test_bump_version_rejects_malformed_versions(version: str) -> None:
++    report = _bump("x = 1\n", "x = 1\n")
++    with pytest.raises(ValueError):
++        report.bump_version(version)
++
++
++@pytest.mark.parametrize(
++    ("version", "expected"),
++    [("1.2.3", "1.2.4"), ("1.2.3-rc.1", "1.2.4"), ("1.2.3+build.5", "1.2.4"), ("0.0.0", "0.0.1")],
++)
++def test_bump_version_drops_a_separated_suffix(version: str, expected: str) -> None:
++    report = _bump("x = 1\n", "x = 1\n")
++    assert report.bump_version(version) == expected
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..dcf581f
