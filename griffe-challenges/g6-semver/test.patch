@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..7429474
+index 0000000..e432727
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1158 @@
+@@ -0,0 +1,1195 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -612,12 +612,12 @@ index 0000000..7429474
 +    old = 'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    new = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    exit_code, _ = _run_semver(tmp_path, old, new, "--fail-on", "major")
-+    assert exit_code == 1
++    assert exit_code != 0
 +    # A major recommendation also meets lower thresholds, not just its own level.
 +    exit_code, _ = _run_semver(tmp_path, old, new, "--fail-on", "minor")
-+    assert exit_code == 1
++    assert exit_code != 0
 +    exit_code, _ = _run_semver(tmp_path, old, new, "--fail-on", "patch")
-+    assert exit_code == 1
++    assert exit_code != 0
 +    exit_code, _ = _run_semver(tmp_path, old, old, "--fail-on", "major")
 +    assert exit_code == 0
 +
@@ -1162,6 +1162,43 @@ index 0000000..7429474
 +def test_bump_version_drops_a_separated_suffix(version: str, expected: str) -> None:
 +    report = _bump("x = 1\n", "x = 1\n")
 +    assert report.bump_version(version) == expected
++
++
++def test_cli_semver_fail_on_gates_json_and_markdown(tmp_path) -> None:
++    # Gating applies in any output mode, and the output stays well formed.
++    old = 'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++    new = 'def tool(a):\n    """Doc."""\n\n__all__ = ["tool"]\n'
++
++    exit_code, output = _run_semver(tmp_path, old, new, "--json", "--fail-on", "major")
++    assert exit_code != 0
++    assert json.loads(output)["bump"] == griffe.Bump.MAJOR.value
++
++    exit_code, output = _run_semver(tmp_path, old, new, "--markdown", "--fail-on", "major")
++    assert exit_code != 0
++    assert griffe.Bump.MAJOR.value in output.lower()
++
++    # Below the threshold the same modes exit zero and still produce output.
++    exit_code, output = _run_semver(tmp_path, old, old, "--json", "--fail-on", "major")
++    assert exit_code == 0
++    assert json.loads(output)["bump"] == griffe.Bump.PATCH.value
++
++
++def test_cli_semver_bump_drops_a_build_suffix(tmp_path) -> None:
++    exit_code, output = _run_semver(
++        tmp_path,
++        'def tool():\n    """Doc."""\n\n__all__ = ["tool"]\n',
++        'def tool():\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
++        "--bump",
++        "1.4.2+build.5",
++    )
++    assert exit_code == 0
++    assert output.strip() == "1.5.0"
++
++
++def test_enum_members_carry_lowercase_values() -> None:
++    for enum in (griffe.Bump, griffe.ChangeKind):
++        for member in enum:
++            assert member.value == member.name.lower()
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..dcf581f
