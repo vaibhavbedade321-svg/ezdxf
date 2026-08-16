@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..d37ffdb
+index 0000000..f81a9fd
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1160 @@
+@@ -0,0 +1,1154 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -65,7 +65,9 @@ index 0000000..d37ffdb
 +        'def tool():\n    """Doc."""\n\n'
 +        'def _helper():\n    """Doc."""\n\n__all__ = ["tool"]\n'
 +    )
-+    assert _bump(old, new).bump is griffe.Bump.PATCH
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.additions
 +
 +
 +def test_removed_public_object_is_major() -> None:
@@ -1118,14 +1120,6 @@ index 0000000..d37ffdb
 +    assert report.bump is griffe.Bump.PATCH
 +    assert not report.deprecations
 +    assert not report.changes
-+
-+
-+def test_added_private_object_is_patch() -> None:
-+    old = "def tool(a): ...\n"
-+    new = "def tool(a): ...\n\n\ndef _helper(): ...\n"
-+    report = _bump(old, new)
-+    assert report.bump is griffe.Bump.PATCH
-+    assert not report.additions
 +
 +
 +def test_breaking_object_is_not_also_deprecated() -> None:
