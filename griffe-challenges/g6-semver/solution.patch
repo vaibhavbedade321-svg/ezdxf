@@ -273,7 +273,7 @@ index 17e346a..32a22da 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 0000000..629b25b
+index 0000000..690cb8a
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
 @@ -0,0 +1,636 @@
@@ -536,7 +536,7 @@ index 0000000..629b25b
 +            return f"{major}.{minor + 1}.0"
 +        return f"{major}.{minor}.{patch + 1}"
 +
-+    def as_dict(self, **kwargs: Any) -> dict[str, Any]:
++    def as_dict(self, **kwargs: Any) -> dict[str, Any]:  # noqa: ARG002
 +        """Return this report's data as a dictionary.
 +
 +        Parameters:
@@ -547,7 +547,7 @@ index 0000000..629b25b
 +        """
 +        return {
 +            "bump": self.bump.value,
-+            "breaking": [breakage.as_dict(**kwargs) for breakage in self.breaking],
++            "breaking": [change.as_dict() for change in self.changes_of_kind(ChangeKind.BREAKING)],
 +            "additions": self.additions,
 +            "removals": self.removals,
 +            "expansions": self.expansions,

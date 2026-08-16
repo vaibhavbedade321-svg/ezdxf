@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..f81a9fd
+index 0000000..7429474
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1154 @@
+@@ -0,0 +1,1158 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -158,10 +158,14 @@ index 0000000..f81a9fd
 +        'def tool(a, b):\n    """Doc."""\n\n__all__ = ["tool"]\n',
 +        'def tool(a):\n    """Doc."""\n\ndef helper():\n    """Doc."""\n\n__all__ = ["tool", "helper"]\n',
 +    )
-+    payload = json.loads(json.dumps(report.as_dict(), cls=griffe.JSONEncoder))
++    # Plain json.dumps, with no custom encoder: the mapping is required to be
++    # JSON-serializable on its own.
++    payload = json.loads(json.dumps(report.as_dict()))
 +    assert payload["bump"] == "major"
 +    assert list(payload["additions"]) == ["helper"]
 +    assert payload["breaking"]
++    for entry in payload["breaking"]:
++        assert {"kind", "path", "detail"} <= set(entry)
 +    assert not payload["removals"]
 +    assert not payload["expansions"]
 +    assert not payload["deprecations"]

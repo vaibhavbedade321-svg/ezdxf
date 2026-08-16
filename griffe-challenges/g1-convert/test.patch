@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_docstring_emitters.py b/packages/griffelib/tests/test_docstring_emitters.py
 new file mode 100644
-index 0000000..4b28d4e
+index 0000000..c691132
 --- /dev/null
 +++ b/packages/griffelib/tests/test_docstring_emitters.py
-@@ -0,0 +1,1183 @@
+@@ -0,0 +1,1189 @@
 +"""Tests for docstring composition and dialect conversion."""
 +
 +from __future__ import annotations
@@ -26,6 +26,12 @@ index 0000000..4b28d4e
 +
 +
 +def _model(sections: list) -> str:
++    """Serialize parsed sections for deep comparison.
++
++    `JSONEncoder` is griffe's existing encoder for its own model objects. It
++    is used here only to compare two parses of a docstring; nothing the
++    solution provides has to be serializable through it.
++    """
 +    return json.dumps(list(sections), cls=JSONEncoder, sort_keys=True)
 +
 +
