@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..3213fbc
+index 0000000..8dc0c20
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1232 @@
+@@ -0,0 +1,1296 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1236,6 +1236,70 @@ index 0000000..3213fbc
 +    report = _bump_multi(old, new)
 +    assert report.bump is griffe.Bump.MINOR
 +    assert report.deprecations == ["Widget.draw"]
++
++
++def test_optional_parameter_addition_survives_an_annotation_change() -> None:
++    # Annotation deltas on existing parameters never count either way, so they
++    # must not cancel a compatible gain made in the same signature.
++    report = _bump("def tool(a): ...\n", "def tool(a: int, extra=1): ...\n")
++    assert report.bump is griffe.Bump.MINOR
++    assert report.expansions == ["tool"]
++
++
++def test_variadic_addition_survives_an_annotation_change() -> None:
++    report = _bump("def tool(a: int): ...\n", "def tool(a: str, *args): ...\n")
++    assert report.bump is griffe.Bump.MINOR
++    assert report.expansions == ["tool"]
++
++
++def test_relaxed_parameter_survives_an_annotation_change() -> None:
++    report = _bump("def tool(a: int, b): ...\n", "def tool(a: str, b=1): ...\n")
++    assert report.bump is griffe.Bump.MINOR
++    assert report.expansions == ["tool"]
++
++
++def test_added_class_reports_its_nested_members_too() -> None:
++    old = 'def keep():\n    """D."""\n\n__all__ = ["keep"]\n'
++    new = (
++        'def keep():\n    """D."""\n\n'
++        'class Widget:\n    """D."""\n\n    def run(self):\n        """D."""\n\n'
++        '__all__ = ["keep", "Widget"]\n'
++    )
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    # The container and everything public inside it are additions; a member of
++    # a container that already existed is reported the same way.
++    assert report.additions == ["Widget", "Widget.run"]
++    assert report.counts[griffe.ChangeKind.ADDED.value] == 2
++    assert [change.path for change in report.changelog()["Widget"]] == ["Widget", "Widget.run"]
++
++
++def test_added_submodule_reports_its_nested_members_too() -> None:
++    old = {"__init__.py": 'def keep():\n    """D."""\n\n__all__ = ["keep"]\n'}
++    new = {
++        "__init__.py": 'from semnew import api\n\ndef keep():\n    """D."""\n\n__all__ = ["keep", "api"]\n',
++        "api.py": 'def run():\n    """D."""\n\n__all__ = ["run"]\n',
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions == ["api", "api.run"]
++
++
++def test_dotted_ignore_name_matches_no_first_path_segment() -> None:
++    # `ignore` names are matched against a whole first path segment, so a
++    # dotted name excludes nothing rather than excluding its head.
++    old = 'def tool(a, b):\n    """D."""\n\n__all__ = ["tool"]\n'
++    new = 'def tool(a):\n    """D."""\n\n__all__ = ["tool"]\n'
++    with (
++        temporary_visited_package("semold", {"__init__.py": old}) as old_module,
++        temporary_visited_package("semnew", {"__init__.py": new}) as new_module,
++    ):
++        dotted = griffe.recommend_bump(old_module, new_module, ignore=("tool.a",))
++        whole = griffe.recommend_bump(old_module, new_module, ignore=("tool",))
++    assert dotted.bump is griffe.Bump.MAJOR
++    assert dotted.breaking
++    assert whole.bump is griffe.Bump.PATCH
++    assert not whole.breaking
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 0000000..dcf581f
