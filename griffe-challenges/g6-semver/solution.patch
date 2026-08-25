@@ -321,10 +321,10 @@ index 17e346aa..32a22da3 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 00000000..72f7bd2c
+index 00000000..bdc08474
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,842 @@
+@@ -0,0 +1,861 @@
 +from __future__ import annotations
 +
 +import re
@@ -777,31 +777,50 @@ index 00000000..72f7bd2c
 +    return paths
 +
 +
-+def _spare_names(
-+    names: dict[str, str],
-+    other_names: dict[str, str],
-+    other_targets: set[str],
-+) -> set[str]:
-+    """Return exported names this model has and the other does not.
-+
-+    Only names for objects both models compare are of interest: those are the
-+    same object under an extra spelling, so the spelling is what changed. A
-+    name that appears because the object behind it is itself new or gone is
-+    already covered by that object's own entry.
++def _alias_groups(names: dict[str, str]) -> dict[str, set[str]]:
++    """Group exported paths by the object each one reaches.
 +
 +    Parameters:
-+        names: This model's exported paths, mapped to their targets.
-+        other_names: The other model's exported paths.
-+        other_targets: The objects the other model exports.
++        names: Exported paths mapped to the object they reach.
 +
 +    Returns:
-+        The exported names present only in this model.
++        A mapping of object to the set of names exporting it.
 +    """
-+    return {
-+        path
-+        for path, target in names.items()
-+        if path not in other_names and target in other_targets
-+    }
++    groups: dict[str, set[str]] = {}
++    for path, target in names.items():
++        groups.setdefault(target, set()).add(path)
++    return groups
++
++
++def _name_deltas(old_names: dict[str, str], new_names: dict[str, str]) -> tuple[set[str], set[str]]:
++    """Return the export names gained and lost by objects present in both models.
++
++    An object is recognised across versions by the exported names it answers
++    to, never by where it happens to be defined: moving an implementation to
++    another module keeps the same public object, so an alias dropped in the
++    same release is still a name the surface lost. Two groups of names belong
++    to the same object when they overlap, and the largest overlap wins when a
++    name set has been split between several objects.
++
++    Parameters:
++        old_names: The old model's exported paths, mapped to their targets.
++        new_names: The new model's exported paths, mapped to their targets.
++
++    Returns:
++        The lost names and the gained names.
++    """
++    new_groups = _alias_groups(new_names)
++    lost: set[str] = set()
++    gained: set[str] = set()
++    for names in _alias_groups(old_names).values():
++        shared = [new_names[name] for name in names if name in new_names]
++        if not shared:
++            # Nothing of this object is exported any more; its own entry says so.
++            continue
++        counterpart = new_groups[max(set(shared), key=shared.count)]
++        lost |= names - counterpart
++        gained |= counterpart - names
++    return lost, gained
 +
 +
 +def _shallowest(paths: set[str]) -> list[str]:
@@ -1067,8 +1086,6 @@ index 00000000..72f7bd2c
 +    roots = (old.path, new.path, old.name, new.name)
 +    old_names = _public_paths(old, ignored)
 +    new_names = _public_paths(new, ignored)
-+    old_targets = set(old_names.values())
-+    new_targets = set(new_names.values())
 +    old_surface = {_relative(obj.path, *roots): path for path, obj in old_index.items()}
 +    new_surface = {_relative(obj.path, *roots): path for path, obj in new_index.items()}
 +
@@ -1081,9 +1098,11 @@ index 00000000..72f7bd2c
 +            return was
 +        return now or was or relative
 +
++    lost_names, gained_names = _name_deltas(old_names, new_names)
++
 +    def _lost_spelling(breakage: Any) -> bool:
 +        """Whether a removal only took one of an object's export names away."""
-+        return isinstance(breakage, ObjectRemovedBreakage) and old_names.get(_surface(breakage.obj)) in new_targets
++        return isinstance(breakage, ObjectRemovedBreakage) and _surface(breakage.obj) in lost_names
 +
 +    breaking = [
 +        breakage
@@ -1116,7 +1135,7 @@ index 00000000..72f7bd2c
 +    # An export name the other model does not have, for an object it does
 +    # still export. Gaining one adds a way to import the object; losing one
 +    # takes it away, whether or not that name was the compared one.
-+    lost = _shallowest(_spare_names(old_names, new_names, new_targets))
++    lost = _shallowest(lost_names)
 +    changes.extend(
 +        _Change(ChangeKind.REMOVED, path, "public export name removed")
 +        for path in lost
@@ -1124,7 +1143,7 @@ index 00000000..72f7bd2c
 +    )
 +    changes.extend(
 +        _Change(ChangeKind.ADDED, path, "public export name added")
-+        for path in _shallowest(_spare_names(new_names, old_names, old_targets))
++        for path in _shallowest(gained_names)
 +        if not _under_breakage(path)
 +    )
 +

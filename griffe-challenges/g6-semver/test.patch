@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..95fe0ace
+index 00000000..234f4086
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1696 @@
+@@ -0,0 +1,1749 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1700,6 +1700,59 @@ index 00000000..95fe0ace
 +    relative = griffe.bump_between("vpkg", old_root, new_root, try_relative_path=True)
 +    assert relative.bump is griffe.Bump.PATCH
 +    assert not relative.changes
++
++
++def _moved_impl(old_exports: str, new_exports: str, new_body: str = 'def f():\n    """D."""\n') -> tuple[dict, dict]:
++    body = 'def f():\n    """D."""\n'
++    return (
++        {"__init__.py": dedent(old_exports), "_old_impl.py": body},
++        {"__init__.py": dedent(new_exports), "_new_impl.py": dedent(new_body)},
++    )
++
++
++def test_moving_an_implementation_still_reports_a_dropped_spare_name() -> None:
++    # The object is recognised by the names it answers to, not by where it is
++    # defined, so `A` ties the two versions together even though `f` moved.
++    old, new = _moved_impl(
++        'from semold._old_impl import f as A, f as B\n\n__all__ = ["A", "B"]\n',
++        'from semnew._new_impl import f as A\n\n__all__ = ["A"]\n',
++    )
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.removals == ["B"]
++
++
++def test_moving_an_implementation_still_reports_a_gained_spare_name() -> None:
++    old, new = _moved_impl(
++        'from semold._old_impl import f as A\n\n__all__ = ["A"]\n',
++        'from semnew._new_impl import f as A, f as B\n\n__all__ = ["A", "B"]\n',
++    )
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions == ["B"]
++
++
++def test_moving_an_implementation_alone_changes_nothing() -> None:
++    # Definition site is not part of the comparison.
++    old, new = _moved_impl(
++        'from semold._old_impl import f as A\n\n__all__ = ["A"]\n',
++        'from semnew._new_impl import f as A\n\n__all__ = ["A"]\n',
++    )
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.changes
++
++
++def test_moving_an_implementation_keeps_its_breakage_and_its_lost_name() -> None:
++    old, new = _moved_impl(
++        'from semold._old_impl import f as A, f as B\n\n__all__ = ["A", "B"]\n',
++        'from semnew._new_impl import f as A\n\n__all__ = ["A"]\n',
++        'def f(a):\n    """D."""\n',
++    )
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.removals == ["B"]
++    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["A"]
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0
