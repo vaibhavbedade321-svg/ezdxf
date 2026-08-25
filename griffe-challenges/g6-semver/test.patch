@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..c4b1c573
+index 00000000..bbb89a59
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1855 @@
+@@ -0,0 +1,1908 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1826,9 +1826,10 @@ index 00000000..c4b1c573
 +    # choice, so only that it says something is required here.
 +    assert all(change.detail for change in breaking_changes)
 +    payload = report.as_dict()
-+    assert payload["breaking"] == [
-+        change for change in payload["changes"] if change["kind"] == griffe.ChangeKind.BREAKING.value
-+    ]
++    # Same entries in both lists. Their relative order is untied here, since
++    # the two share a path and a kind, so compare them order-insensitively.
++    serialized = [change for change in payload["changes"] if change["kind"] == griffe.ChangeKind.BREAKING.value]
++    assert sorted(map(json.dumps, payload["breaking"])) == sorted(map(json.dumps, serialized))
 +
 +
 +@pytest.mark.parametrize(
@@ -1859,6 +1860,58 @@ index 00000000..c4b1c573
 +    assert report.bump is griffe.Bump.MAJOR
 +    assert not report.expansions
 +    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["t"]
++
++
++def test_declaring_an_empty_all_empties_the_surface() -> None:
++    # Nothing was listed before, so `kept` was public by the underscore rule;
++    # declaring an empty `__all__` takes it off the surface with no breakage.
++    old = 'def kept():\n    """D."""\n'
++    new = 'def kept():\n    """D."""\n\n__all__ = []\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.removals == ["kept"]
++    assert not report.breaking
++
++
++def test_dropping_an_empty_all_puts_names_back_on_the_surface() -> None:
++    old = 'def kept():\n    """D."""\n\n__all__ = []\n'
++    new = 'def kept():\n    """D."""\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions == ["kept"]
++
++
++def test_removing_a_deprecated_decorator_is_patch() -> None:
++    # Only newly carrying the decorator recommends MINOR; losing it is not a
++    # capability change in either direction.
++    old = 'from warnings import deprecated\n\n\n@deprecated("x")\ndef t(a):\n    """D."""\n\n__all__ = ["t"]\n'
++    new = 'def t(a):\n    """D."""\n\n__all__ = ["t"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.deprecations
++    assert not report.changes
++
++
++def test_gated_by_rejects_a_level_that_is_not_a_bump() -> None:
++    # It takes a `Bump` member or its value; anything else is neither, so it
++    # must refuse rather than answer.
++    report = _bump("x = 1\n", "x = 1\n")
++    for level in ("nonsense", ""):
++        with pytest.raises((ValueError, KeyError)):
++            report.gated_by(level)
++
++
++def test_cli_semver_rejects_an_unknown_fail_on_level(tmp_path) -> None:
++    code = 'def tool():\n    """D."""\n\n__all__ = ["tool"]\n'
++    # A real level runs, so the rejection below cannot pass for the wrong reason.
++    exit_code, _ = _run_semver(tmp_path, code, code, "--fail-on", "major")
++    assert exit_code == 0
++    try:
++        exit_code, _ = _run_semver(tmp_path, code, code, "--fail-on", "nonsense")
++    except SystemExit as exc:
++        assert exc.code != 0
++    else:
++        assert exit_code != 0
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0
