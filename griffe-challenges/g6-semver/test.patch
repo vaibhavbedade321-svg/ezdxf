@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..ed7c04de
+index 00000000..5062f855
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1930 @@
+@@ -0,0 +1,1960 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1934,6 +1934,36 @@ index 00000000..ed7c04de
 +        pass
 +    else:
 +        assert exit_code != 0
++
++
++def test_newly_exported_object_is_only_an_addition() -> None:
++    # `f` was hidden by the empty `__all__`, so its old signature was never
++    # part of the API and the difference between them is not a breakage.
++    old = 'def f(a, b):\n    """D."""\n\n__all__ = []\n'
++    new = 'def f(a):\n    """D."""\n\n__all__ = ["f"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions == ["f"]
++    assert not report.breaking
++
++
++def test_object_leaving_the_surface_is_only_a_removal() -> None:
++    # The mirror image: once `f` is no longer exported, what happened to its
++    # signature on the way out is not a public breakage either.
++    old = 'def f(a, b):\n    """D."""\n\n__all__ = ["f"]\n'
++    new = 'def f(a):\n    """D."""\n\n__all__ = []\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.removals == ["f"]
++    assert not report.breaking
++
++
++def test_signature_break_between_two_exported_versions_is_still_breaking() -> None:
++    old = 'def f(a, b):\n    """D."""\n\n__all__ = ["f"]\n'
++    new = 'def f(a):\n    """D."""\n\n__all__ = ["f"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["f"]
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0

@@ -321,10 +321,10 @@ index 17e346aa..32a22da3 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 00000000..6c16d1f6
+index 00000000..4b121d28
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,868 @@
+@@ -0,0 +1,880 @@
 +from __future__ import annotations
 +
 +import re
@@ -1106,16 +1106,28 @@ index 00000000..6c16d1f6
 +        """Whether a removal only took one of an object's export names away."""
 +        return isinstance(breakage, ObjectRemovedBreakage) and _surface(breakage.obj) in lost_names
 +
++    def _eligible(breakage: Any) -> bool:
++        """Whether a breakage describes a change to something both versions expose.
++
++        A deletion is about a path the old version exported and the new one
++        does not, so only the old side is required, and it is dropped when the
++        object keeps another export name. Every other breakage describes an
++        object that stayed on the surface: a path exported by only one version
++        arrived or left, which is reported by name instead.
++        """
++        path = _surface(breakage.obj)
++        if isinstance(breakage, ObjectRemovedBreakage):
++            return path in old_names and not _lost_spelling(breakage)
++        return path in old_names and path in new_names
++
 +    breaking = [
 +        breakage
 +        for breakage in breaking
 +        if _surface(breakage.obj).split(".", 1)[0] not in ignored
-+        # A breakage on a path neither model compares belongs to a spare export
-+        # of an object compared elsewhere, and losing an export name is a
-+        # removal rather than a change to the object itself. Both are reported
-+        # by name below.
-+        and (_surface(breakage.obj) in old_index or _surface(breakage.obj) in new_index)
-+        and not _lost_spelling(breakage)
++        # The surface walk is the only authority on what is public: griffe's
++        # own predicate reads an empty `__all__` as no export list at all, so
++        # it offers breakages for objects this comparison never exposed.
++        and _eligible(breakage)
 +    ]
 +    breaking_paths = {_surface(breakage.obj) for breakage in breaking}
 +
