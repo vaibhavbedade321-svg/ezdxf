@@ -1,6 +1,6 @@
 Add `recommend_bump(old, new, ignore=())` and `bump_between(package, old_path, new_path, ignore=(), **load_options)` to turn an API diff into a semantic-version recommendation.
 
-Both are importable from `griffe`, with `Bump`, `ChangeKind` and `BumpReport`. `recommend_bump` compares two loaded models and returns a `BumpReport`. `bump_between` loads it from each search path, never the working directory unless asked, forwarding load options to both.
+Both are importable from `griffe`, with `Bump`, `ChangeKind` and `BumpReport`. `recommend_bump` compares two loaded models and returns a `BumpReport`. `bump_between` loads it from each search path, forwarding load options to both. It gives the loader's `try_relative_path` option a default of false, so a package of the same name in the working directory is not loaded instead, and forwards the option when a caller sets it.
 
 Objects compare by exported path relative to the package name, not definition site. Nested members compare too, including inside a new or re-exported container. A name in `ignore` matches a whole first path segment and excludes it, breakage included. `__all__` lists exactly what a module exports, even when empty.
 
