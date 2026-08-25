@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..f471322c
+index 00000000..af5747c8
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,2020 @@
+@@ -0,0 +1,2064 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -2024,6 +2024,50 @@ index 00000000..f471322c
 +    report = _bump_multi(old, new)
 +    assert report.bump is griffe.Bump.MAJOR
 +    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["A"]
++
++
++_REBIND_OLD = {
++    "__init__.py": 'from semold._impl import f as A, f as B\n\n__all__ = ["A", "B"]\n',
++    "_impl.py": 'def f(a, b):\n    """D."""\n',
++}
++
++
++def test_rebinding_an_export_to_an_incompatible_object_is_breaking() -> None:
++    # `A` still reaches `f`, but `B` now reaches `g`, which drops a parameter.
++    # Callers of `B` break, and neither name left the surface.
++    new = {
++        "__init__.py": 'from semnew._impl import f as A, g as B\n\n__all__ = ["A", "B"]\n',
++        "_impl.py": 'def f(a, b):\n    """D."""\n\ndef g(a):\n    """D."""\n',
++    }
++    report = _bump_multi(_REBIND_OLD, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["B"]
++    assert not report.removals
++    assert not report.additions
++
++
++def test_rebinding_an_export_to_a_compatible_object_is_patch() -> None:
++    # Same shape, so nothing a caller of either name can notice.
++    new = {
++        "__init__.py": 'from semnew._impl import f as A, g as B\n\n__all__ = ["A", "B"]\n',
++        "_impl.py": 'def f(a, b):\n    """D."""\n\ndef g(a, b):\n    """D."""\n',
++    }
++    report = _bump_multi(_REBIND_OLD, new)
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.changes
++
++
++def test_an_alias_group_that_splits_reports_only_the_broken_path() -> None:
++    # Both names are rebound at once, so no overlap survives to anchor the
++    # group; only the path whose new object is incompatible may be reported.
++    new = {
++        "__init__.py": 'from semnew._impl import g as A, h as B\n\n__all__ = ["A", "B"]\n',
++        "_impl.py": 'def g(a, b):\n    """D."""\n\ndef h(a):\n    """D."""\n',
++    }
++    report = _bump_multi(_REBIND_OLD, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert [change.path for change in report.changes] == ["B"]
++    assert not report.removals
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0

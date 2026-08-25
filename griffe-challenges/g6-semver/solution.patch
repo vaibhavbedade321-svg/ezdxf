@@ -321,16 +321,16 @@ index 17e346aa..32a22da3 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 00000000..7e58fd67
+index 00000000..51243479
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,888 @@
+@@ -0,0 +1,915 @@
 +from __future__ import annotations
 +
 +import re
 +from typing import TYPE_CHECKING, Any
 +
-+from griffe._internal.diff import ObjectRemovedBreakage, find_breaking_changes
++from griffe._internal.diff import ObjectRemovedBreakage, _type_based_yield, find_breaking_changes
 +from griffe._internal.enumerations import Bump, ChangeKind, ParameterKind
 +from griffe._internal.exceptions import AliasResolutionError, CyclicAliasError
 +
@@ -756,7 +756,7 @@ index 00000000..7e58fd67
 +    return result
 +
 +
-+def _public_paths(module: Module, ignore: frozenset[str]) -> dict[str, str]:
++def _public_members(module: Module, ignore: frozenset[str]) -> dict[str, Object]:
 +    """Map every package-relative path the surface exposes to what it reaches.
 +
 +    `_public_index` keeps one path per object so an object's own changes are
@@ -769,16 +769,14 @@ index 00000000..7e58fd67
 +        ignore: Top-level names to leave out.
 +
 +    Returns:
-+        A mapping of exported path to the canonical path of its target.
++        A mapping of exported path to the object or unresolved alias it reaches.
 +    """
-+    paths: dict[str, str] = {}
++    members: dict[str, Object] = {}
 +    for public_path, target in _iter_public(module, module.name):
 +        relative = _relative(public_path, module.name, module.path)
 +        if relative.split(".", 1)[0] not in ignore:
-+            # Grouping only ever compares names inside one model, so the
-+            # canonical path is kept whole and cannot collide with another.
-+            paths[relative] = _identity(target)
-+    return paths
++            members[relative] = target  # ty:ignore[invalid-assignment]
++    return members
 +
 +
 +def _alias_groups(names: dict[str, str]) -> dict[str, set[str]]:
@@ -796,7 +794,10 @@ index 00000000..7e58fd67
 +    return groups
 +
 +
-+def _name_deltas(old_names: dict[str, str], new_names: dict[str, str]) -> tuple[set[str], set[str]]:
++def _name_deltas(
++    old_names: dict[str, str],
++    new_names: dict[str, str],
++) -> tuple[set[str], set[str], set[str]]:
 +    """Return the export names gained and lost by objects present in both models.
 +
 +    An object is recognised across versions by the exported names it answers
@@ -811,20 +812,28 @@ index 00000000..7e58fd67
 +        new_names: The new model's exported paths, mapped to their targets.
 +
 +    Returns:
-+        The lost names and the gained names.
++        The lost names, the gained names, and the names both models export
++        while reaching different objects.
 +    """
 +    new_groups = _alias_groups(new_names)
 +    lost: set[str] = set()
 +    gained: set[str] = set()
-+    for names in _alias_groups(old_names).values():
++    rebound: set[str] = set()
++    for names in sorted(_alias_groups(old_names).values(), key=sorted):
 +        shared = [new_names[name] for name in names if name in new_names]
 +        if not shared:
 +            # Nothing of this object is exported any more; its own entry says so.
 +            continue
-+        counterpart = new_groups[max(set(shared), key=shared.count)]
-+        lost |= names - counterpart
-+        gained |= counterpart - names
-+    return lost, gained
++        # Widest overlap wins, and the identifying path breaks a tie, so the
++        # choice never depends on the order a set happens to iterate in.
++        counterpart = new_groups[min(set(shared), key=lambda target: (-shared.count(target), target))]
++        dropped = names - counterpart
++        # A name the new version still exports was pointed at something else,
++        # not taken away. Comparing it is the caller's job, not this one's.
++        rebound |= {name for name in dropped if name in new_names}
++        lost |= dropped - rebound
++        gained |= {name for name in counterpart - names if name not in old_names}
++    return lost, gained, rebound
 +
 +
 +def _shallowest(paths: set[str]) -> list[str]:
@@ -1088,8 +1097,10 @@ index 00000000..7e58fd67
 +    new_index = _public_index(new, ignored)
 +
 +    roots = (old.path, new.path, old.name, new.name)
-+    old_names = _public_paths(old, ignored)
-+    new_names = _public_paths(new, ignored)
++    old_members = _public_members(old, ignored)
++    new_members = _public_members(new, ignored)
++    old_names = {path: _identity(obj) for path, obj in old_members.items()}
++    new_names = {path: _identity(obj) for path, obj in new_members.items()}
 +    # Keyed by what an export reaches, so every spelling of one object lands
 +    # on its compared path, while two same-named objects from different
 +    # modules stay apart, which dropping a leading component would not.
@@ -1104,7 +1115,7 @@ index 00000000..7e58fd67
 +            return was
 +        return now or was or _relative(obj.path, *roots)
 +
-+    lost_names, gained_names = _name_deltas(old_names, new_names)
++    lost_names, gained_names, rebound_names = _name_deltas(old_names, new_names)
 +
 +    def _eligible(breakage: Any) -> bool:
 +        """Whether a breakage describes a change to something both versions expose.
@@ -1157,6 +1168,22 @@ index 00000000..7e58fd67
 +    # An export name the other model does not have, for an object it does
 +    # still export. Gaining one adds a way to import the object; losing one
 +    # takes it away, whether or not that name was the compared one.
++    for path in sorted(rebound_names):
++        # The path survived but points somewhere else. Neither index compares
++        # it, since each model reaches it through a different object, so the
++        # two are compared here and reported under the path callers use.
++        if path in old_index and path in new_index:
++            continue
++        try:
++            rebinding = list(_type_based_yield(old_members[path], new_members[path], seen_paths=set()))
++        except (AliasResolutionError, CyclicAliasError):
++            continue
++        changes.extend(
++            _Change(ChangeKind.BREAKING, path, _breakage_detail(breakage)) for breakage in rebinding
++        )
++        if rebinding:
++            breaking_paths.add(path)
++
 +    lost = _shallowest(lost_names)
 +    changes.extend(
 +        _Change(ChangeKind.REMOVED, path, "public export name removed")
