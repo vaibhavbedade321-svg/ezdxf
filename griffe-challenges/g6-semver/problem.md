@@ -1,6 +1,6 @@
-Griffe finds breaking changes between two package models but never turns them into a bump decision.
+Add `recommend_bump(old, new, ignore=())` and `bump_between(package, old_path, new_path, ignore=(), **load_options)` to turn an API diff into a semantic-version recommendation.
 
-`recommend_bump(old, new, ignore=())` compares two loaded models and returns a `BumpReport`. It is importable from `griffe` with `Bump`, `ChangeKind` and `BumpReport`, as is `bump_between(package, old_path, new_path, ignore=(), **load_options)`, which loads the package from each search path, forwarding load options to both, then compares them.
+Both are importable from `griffe`, along with `Bump`, `ChangeKind` and `BumpReport`. `recommend_bump` compares two loaded models and returns a `BumpReport`; `bump_between` loads the package from each search path, forwarding load options to both, then compares them.
 
 Objects compare by exported path relative to the package name, not definition site, and each is compared under one exported path. Nested members of classes and submodules compare too, including inside a newly added or re-exported container. A name in `ignore` matches a whole first path segment and excludes that object entirely, breakage included.
 
