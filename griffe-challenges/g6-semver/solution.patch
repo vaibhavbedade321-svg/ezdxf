@@ -273,10 +273,10 @@ index 17e346aa..32a22da3 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 00000000..f0844253
+index 00000000..4626e790
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,656 @@
+@@ -0,0 +1,668 @@
 +from __future__ import annotations
 +
 +import re
@@ -524,7 +524,7 @@ index 00000000..f0844253
 +        Raises:
 +            ValueError: If `version` is not a valid `major.minor.patch` string.
 +        """
-+        match = _VERSION.match(version)
++        match = _VERSION.fullmatch(version)
 +        if match is None:
 +            raise ValueError(f"invalid version: {version!r}")
 +        major = int(match.group("major"))
@@ -901,12 +901,24 @@ index 00000000..f0844253
 +        _Change(ChangeKind.BREAKING, _surface(breakage.obj), _breakage_detail(breakage))
 +        for breakage in breaking
 +    ]
++    def _under_breakage(path: str) -> bool:
++        """Whether a breaking change to an ancestor already covers this path.
++
++        Deleting a class, or changing its kind, takes its members with it. The
++        breakage is reported once against the container, so a member that only
++        disappeared because of it is neither a removal of its own nor an
++        addition somewhere else.
++        """
++        return any(path.startswith(f"{prefix}.") for prefix in breaking_paths)
++
 +    for path, old_obj in old_index.items():
-+        if path not in new_index and path not in breaking_paths:
++        if path not in new_index and path not in breaking_paths and not _under_breakage(path):
 +            changes.append(
 +                _Change(ChangeKind.REMOVED, path, f"public {_kind_label(old_obj)} removed"),
 +            )
 +    for path, obj in new_index.items():
++        if _under_breakage(path):
++            continue
 +        if path not in old_index:
 +            changes.append(
 +                _Change(ChangeKind.ADDED, path, f"public {_kind_label(obj)} added"),

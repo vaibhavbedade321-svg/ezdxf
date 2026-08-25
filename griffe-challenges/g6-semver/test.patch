@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..46446acc
+index 00000000..f8b05a44
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1408 @@
+@@ -0,0 +1,1464 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1412,6 +1412,62 @@ index 00000000..46446acc
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.PATCH
 +    assert not report.expansions
++
++
++_CONTAINER = (
++    'class Tool:\n    """D."""\n\n    def run(self):\n        """D."""\n\n'
++    'def keep():\n    """D."""\n\n__all__ = ["Tool", "keep"]\n'
++)
++
++
++def test_deleting_a_container_does_not_also_remove_its_members() -> None:
++    # The breakage is reported once, against the container. `Tool.run` did not
++    # leave the surface on its own, so it is not a `REMOVED` entry as well.
++    new = 'def keep():\n    """D."""\n\n__all__ = ["keep"]\n'
++    report = _bump(_CONTAINER, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert not report.removals
++    assert [change.path for change in report.changes] == ["Tool"]
++
++
++def test_changing_a_container_kind_does_not_also_remove_its_members() -> None:
++    new = 'Tool = 3\n\ndef keep():\n    """D."""\n\n__all__ = ["Tool", "keep"]\n'
++    report = _bump(_CONTAINER, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert not report.removals
++    assert [change.path for change in report.changes] == ["Tool"]
++
++
++def test_member_removed_from_a_surviving_container_is_still_reported() -> None:
++    # The suppression above must not swallow a member that disappeared on its
++    # own while its container stayed put.
++    new = 'class Tool:\n    """D."""\n\ndef keep():\n    """D."""\n\n__all__ = ["Tool", "keep"]\n'
++    report = _bump(_CONTAINER, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert [change.path for change in report.changes] == ["Tool.run"]
++
++
++def test_bump_version_rejects_a_trailing_newline() -> None:
++    # A version string must match end to end, not merely up to a final newline.
++    report = _bump("x = 1\n", "x = 1\n")
++    for version in ("1.2.3\n", "1.2.3-rc.1\n"):
++        with pytest.raises(ValueError):
++            report.bump_version(version)
++
++
++def test_public_re_export_of_a_missing_dependency_still_reports(tmp_path) -> None:
++    # The dependency is not on the search path, so the alias never resolves.
++    # Its exported name is still part of the surface, and losing it breaks.
++    for version, body in (
++        ("old", 'from dependency import Widget\n\n__all__ = ["Widget"]\n'),
++        ("new", 'def keep():\n    """D."""\n\n__all__ = ["keep"]\n'),
++    ):
++        package = tmp_path / version / "extpkg"
++        package.mkdir(parents=True)
++        (package / "__init__.py").write_text(body, encoding="utf8")
++    report = griffe.bump_between("extpkg", str(tmp_path / "old"), str(tmp_path / "new"))
++    assert report.bump is griffe.Bump.MAJOR
++    assert "Widget" in {change.path for change in report.changes}
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0
