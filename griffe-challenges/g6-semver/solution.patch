@@ -321,10 +321,10 @@ index 17e346aa..32a22da3 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 00000000..dbec93c9
+index 00000000..b4b9b0fe
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,717 @@
+@@ -0,0 +1,803 @@
 +from __future__ import annotations
 +
 +import re
@@ -729,6 +729,70 @@ index 00000000..dbec93c9
 +    return result
 +
 +
++def _public_paths(module: Module, ignore: frozenset[str]) -> dict[str, str]:
++    """Map every package-relative path the surface exposes to what it reaches.
++
++    `_public_index` keeps one path per object so an object's own changes are
++    reported once. Every exported name is still part of the surface, though:
++    losing one breaks the callers that imported it, whichever other names the
++    object also answers to.
++
++    Parameters:
++        module: The loaded model to walk.
++        ignore: Top-level names to leave out.
++
++    Returns:
++        A mapping of exported path to the canonical path of its target.
++    """
++    paths: dict[str, str] = {}
++    for public_path, target in _iter_public(module, module.name):
++        relative = _relative(public_path, module.name, module.path)
++        if relative.split(".", 1)[0] not in ignore:
++            paths[relative] = target.path
++    return paths
++
++
++def _spare_names(
++    names: dict[str, str],
++    other_names: dict[str, str],
++    index: dict[str, Object],
++    other_index: dict[str, Object],
++) -> set[str]:
++    """Return exported names this model has and the other does not.
++
++    Only names for objects both models compare are of interest: those are the
++    same object under an extra spelling, so the spelling is what changed. A
++    name that appears because the object behind it is itself new or gone is
++    already covered by that object's own entry.
++
++    Parameters:
++        names: This model's exported paths, mapped to their targets.
++        other_names: The other model's exported paths.
++        index: This model's compared paths.
++        other_index: The other model's compared paths.
++
++    Returns:
++        The exported names present only in this model.
++    """
++    chosen = {obj.path: path for path, obj in index.items()}
++    return {
++        path
++        for path, target in names.items()
++        if path not in other_names
++        and path not in index
++        and chosen.get(target) in other_index
++    }
++
++
++def _shallowest(paths: set[str]) -> list[str]:
++    """Drop paths whose ancestor is in the same set, so each is reported once."""
++    return sorted(
++        path
++        for path in paths
++        if not any(path.startswith(f"{other}.") for other in paths if other != path)
++    )
++
++
 +def _is_optional(parameter: Any) -> bool:
 +    """Return whether a parameter can be omitted by a caller."""
 +    return parameter.kind in _VARIADIC_KINDS or parameter.default is not None
@@ -991,6 +1055,10 @@ index 00000000..dbec93c9
 +        breakage
 +        for breakage in breaking
 +        if _surface(breakage.obj).split(".", 1)[0] not in ignored
++        # A breakage whose path is not one of the compared paths belongs to a
++        # spare export of an object compared elsewhere. Losing that name is a
++        # removal, handled below, not a change to the object itself.
++        and _surface(breakage.obj) in old_index
 +    ]
 +    breaking_paths = {_surface(breakage.obj) for breakage in breaking}
 +
@@ -1008,8 +1076,25 @@ index 00000000..dbec93c9
 +        """
 +        return any(path.startswith(f"{prefix}.") for prefix in breaking_paths)
 +
++    # Spare export names of objects compared under a different path. Gaining
++    # one adds a way to import the object; losing one takes it away.
++    old_names = _public_paths(old, ignored)
++    new_names = _public_paths(new, ignored)
++    changes.extend(
++        _Change(ChangeKind.REMOVED, path, "public export name removed")
++        for path in _shallowest(_spare_names(old_names, new_names, old_index, new_index))
++        if not _under_breakage(path)
++    )
++    changes.extend(
++        _Change(ChangeKind.ADDED, path, "public export name added")
++        for path in _shallowest(_spare_names(new_names, old_names, new_index, old_index))
++        if not _under_breakage(path)
++    )
++
 +    for path, old_obj in old_index.items():
-+        if path not in new_index and path not in breaking_paths and not _under_breakage(path):
++        # A path the other model still exports, just not as the compared one,
++        # has not left the surface.
++        if path not in new_index and path not in new_names and path not in breaking_paths and not _under_breakage(path):
 +            changes.append(
 +                _Change(ChangeKind.REMOVED, path, f"public {_kind_label(old_obj)} removed"),
 +            )
@@ -1017,9 +1102,10 @@ index 00000000..dbec93c9
 +        if _under_breakage(path):
 +            continue
 +        if path not in old_index:
-+            changes.append(
-+                _Change(ChangeKind.ADDED, path, f"public {_kind_label(obj)} added"),
-+            )
++            if path not in old_names:
++                changes.append(
++                    _Change(ChangeKind.ADDED, path, f"public {_kind_label(obj)} added"),
++                )
 +            continue
 +        if path in breaking_paths:
 +            continue

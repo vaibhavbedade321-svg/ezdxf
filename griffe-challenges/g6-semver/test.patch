@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..4143ca3e
+index 00000000..642851ba
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1532 @@
+@@ -0,0 +1,1607 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1536,6 +1536,81 @@ index 00000000..4143ca3e
 +    ignored = griffe.bump_between("acme.library", old_root, new_root, ignore=("Widget",))
 +    assert ignored.bump is griffe.Bump.PATCH
 +    assert not ignored.changes
++
++
++_ALIASED = 'def f():\n    """D."""\n'
++
++
++def _alias_versions(old_names: str, new_names: str) -> tuple[dict, dict]:
++    return (
++        {"__init__.py": dedent(old_names), "inner.py": _ALIASED},
++        {"__init__.py": dedent(new_names), "inner.py": _ALIASED},
++    )
++
++
++def test_dropping_a_spare_export_name_is_a_removal() -> None:
++    # `f` is still exported as `A`, so it is compared under `A` in both
++    # models. `from pkg import B` stops working all the same.
++    old, new = _alias_versions(
++        'from semold.inner import f as A, f as B\n\n__all__ = ["A", "B"]\n',
++        'from semnew.inner import f as A\n\n__all__ = ["A"]\n',
++    )
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.removals == ["B"]
++    assert not report.breaking
++
++
++def test_adding_a_spare_export_name_is_an_addition() -> None:
++    old, new = _alias_versions(
++        'from semold.inner import f as A\n\n__all__ = ["A"]\n',
++        'from semnew.inner import f as A, f as B\n\n__all__ = ["A", "B"]\n',
++    )
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions == ["B"]
++
++
++def test_dropping_the_compared_name_leaves_one_entry() -> None:
++    # `A` was the compared path and is gone; `B` was already exported, so it
++    # is not an addition just because the comparison moved onto it.
++    old, new = _alias_versions(
++        'from semold.inner import f as A, f as B\n\n__all__ = ["A", "B"]\n',
++        'from semnew.inner import f as B\n\n__all__ = ["B"]\n',
++    )
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert [change.path for change in report.changes] == ["A"]
++
++
++def test_an_ignored_spare_name_can_disappear_freely() -> None:
++    old, new = _alias_versions(
++        'from semold.inner import f as A, f as B\n\n__all__ = ["A", "B"]\n',
++        'from semnew.inner import f as A\n\n__all__ = ["A"]\n',
++    )
++    with (
++        temporary_visited_package("semold", old) as old_module,
++        temporary_visited_package("semnew", new) as new_module,
++    ):
++        report = griffe.recommend_bump(old_module, new_module, ignore=("B",))
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.changes
++
++
++def test_a_member_added_to_a_twice_exported_class_is_reported_once() -> None:
++    # The extra spellings of the class must not turn one new method into
++    # several additions.
++    old = {
++        "__init__.py": 'from semold.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
++        "inner.py": 'class Widget:\n    """D."""\n',
++    }
++    new = {
++        "__init__.py": 'from semnew.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
++        "inner.py": 'class Widget:\n    """D."""\n\n    def y(self):\n        """D."""\n',
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions == ["A.y"]
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0
