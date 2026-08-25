@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..234f4086
+index 00000000..e461d2e9
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1749 @@
+@@ -0,0 +1,1792 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1753,6 +1753,49 @@ index 00000000..234f4086
 +    assert report.bump is griffe.Bump.MAJOR
 +    assert report.removals == ["B"]
 +    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["A"]
++
++
++def _external_versions(tmp_path, version: str, dep1_signature: str):
++    """Build a package re-exporting same-named functions from two dependencies."""
++    base = tmp_path / version
++    for name, body in (
++        ("dep1", f'def f({dep1_signature}):\n    """D."""\n'),
++        ("dep2", 'def f(a, b):\n    """D."""\n'),
++    ):
++        module = base / name
++        module.mkdir(parents=True)
++        (module / "__init__.py").write_text(body, encoding="utf8")
++    package = base / "extpkg"
++    package.mkdir(parents=True)
++    (package / "__init__.py").write_text(
++        'from dep1 import f as one\nfrom dep2 import f as two\n\n__all__ = ["one", "two"]\n',
++        encoding="utf8",
++    )
++    collection = griffe.ModulesCollection()
++    for name in ("dep1", "dep2", "extpkg"):
++        griffe.load(name, search_paths=[str(base)], modules_collection=collection, try_relative_path=False)
++    return collection["extpkg"]
++
++
++def test_breakage_is_reported_under_the_right_external_re_export(tmp_path) -> None:
++    # `one` and `two` reach same-named functions in different dependencies.
++    # Only `dep1.f` changes, so only `one` may carry the breakage.
++    old = _external_versions(tmp_path, "old", "a, b")
++    new = _external_versions(tmp_path, "new", "a")
++    report = griffe.recommend_bump(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert [(change.kind, change.path) for change in report.changes] == [
++        (griffe.ChangeKind.BREAKING, "one"),
++    ]
++
++
++def test_unresolved_re_export_present_in_both_versions_is_not_an_error() -> None:
++    # The dependency was never loaded, so there is nothing to compare behind
++    # the name. It still holds its place on the surface.
++    source = {"__init__.py": 'from dependency import Widget\n\ndef keep():\n    """D."""\n\n__all__ = ["Widget", "keep"]\n'}
++    report = _bump_multi(source, source)
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.changes
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0

@@ -321,10 +321,10 @@ index 17e346aa..32a22da3 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 00000000..bdc08474
+index 00000000..6c16d1f6
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,861 @@
+@@ -0,0 +1,868 @@
 +from __future__ import annotations
 +
 +import re
@@ -771,9 +771,9 @@ index 00000000..bdc08474
 +    for public_path, target in _iter_public(module, module.name):
 +        relative = _relative(public_path, module.name, module.path)
 +        if relative.split(".", 1)[0] not in ignore:
-+            # The target is named relative to the package too, so the two
-+            # models agree on it however each was loaded.
-+            paths[relative] = _relative(target.path, module.name, module.path)
++            # Grouping only ever compares names inside one model, so the
++            # canonical path is kept whole and cannot collide with another.
++            paths[relative] = target.path
 +    return paths
 +
 +
@@ -1086,17 +1086,19 @@ index 00000000..bdc08474
 +    roots = (old.path, new.path, old.name, new.name)
 +    old_names = _public_paths(old, ignored)
 +    new_names = _public_paths(new, ignored)
-+    old_surface = {_relative(obj.path, *roots): path for path, obj in old_index.items()}
-+    new_surface = {_relative(obj.path, *roots): path for path, obj in new_index.items()}
++    # Keyed by the canonical path itself: two re-exports of same-named objects
++    # from different modules must not collapse onto one entry, which dropping
++    # a leading component would do.
++    old_surface = {obj.path: path for path, obj in old_index.items()}
++    new_surface = {obj.path: path for path, obj in new_index.items()}
 +
 +    def _surface(obj: Object) -> str:
 +        """Name an object by a compared path, preferring one that still exists."""
-+        relative = _relative(obj.path, *roots)
-+        was = old_surface.get(relative)
-+        now = new_surface.get(relative)
++        was = old_surface.get(obj.path)
++        now = new_surface.get(obj.path)
 +        if was is not None and (was in new_names or now is None):
 +            return was
-+        return now or was or relative
++        return now or was or _relative(obj.path, *roots)
 +
 +    lost_names, gained_names = _name_deltas(old_names, new_names)
 +
@@ -1168,10 +1170,15 @@ index 00000000..bdc08474
 +        if path in breaking_paths:
 +            continue
 +        old_obj = old_index[path]
-+        detail = _compatible_expansion(old_obj, obj)
++        try:
++            detail = _compatible_expansion(old_obj, obj)
++            deprecation = _deprecation_added(old_obj, obj)
++        except (AliasResolutionError, CyclicAliasError):
++            # An export whose target was never loaded still holds its name on
++            # the surface, but there is nothing to compare behind it.
++            continue
 +        if detail is not None:
 +            changes.append(_Change(ChangeKind.EXPANDED, path, detail))
-+        deprecation = _deprecation_added(old_obj, obj)
 +        if deprecation is not None:
 +            changes.append(_Change(ChangeKind.DEPRECATED, path, deprecation))
 +
