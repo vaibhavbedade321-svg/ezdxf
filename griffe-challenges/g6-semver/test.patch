@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..e83ec211
+index 00000000..95fe0ace
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1707 @@
+@@ -0,0 +1,1696 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1687,30 +1687,19 @@ index 00000000..e83ec211
 +
 +
 +def test_bump_between_forwards_an_explicit_try_relative_path(tmp_path, monkeypatch) -> None:
-+    # The option defaults to False so the working directory cannot decide the
-+    # comparison, but a caller asking for it explicitly still gets it rather
-+    # than having it silently dropped.
-+    both = 'def keep(a, b):\n    """D."""\n\n__all__ = ["keep"]\n'
-+    old_root = _write_vpkg(tmp_path, "old", both)
-+    new_root = _write_vpkg(tmp_path, "new", both)
++    # By default the two roots decide the comparison, so the `vpkg` in the
++    # working directory is ignored and the real difference shows. A caller who
++    # explicitly asks for the loader's relative-path behaviour gets it: both
++    # sides then resolve to that same working copy, so nothing differs.
++    old_root = _write_vpkg(tmp_path, "old", 'def keep(a, b):\n    """D."""\n\n__all__ = ["keep"]\n')
++    new_root = _write_vpkg(tmp_path, "new", 'def keep(a):\n    """D."""\n\n__all__ = ["keep"]\n')
++    _write_vpkg(tmp_path, "cwd", 'def keep(a, b):\n    """D."""\n\n__all__ = ["keep"]\n')
++    monkeypatch.chdir(tmp_path / "cwd")
 +
-+    from griffe._internal import loader as loader_module
-+
-+    seen = []
-+    real_load = loader_module.load
-+
-+    def _record(*args, **kwargs):
-+        seen.append(kwargs.get("try_relative_path"))
-+        return real_load(*args, **kwargs)
-+
-+    monkeypatch.setattr(loader_module, "load", _record)
-+
-+    griffe.bump_between("vpkg", old_root, new_root)
-+    assert seen == [False, False]
-+
-+    seen.clear()
-+    griffe.bump_between("vpkg", old_root, new_root, try_relative_path=True)
-+    assert seen == [True, True]
++    assert griffe.bump_between("vpkg", old_root, new_root).bump is griffe.Bump.MAJOR
++    relative = griffe.bump_between("vpkg", old_root, new_root, try_relative_path=True)
++    assert relative.bump is griffe.Bump.PATCH
++    assert not relative.changes
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0
