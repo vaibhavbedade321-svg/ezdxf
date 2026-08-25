@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..e461d2e9
+index 00000000..155b27fd
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1792 @@
+@@ -0,0 +1,1824 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1796,6 +1796,38 @@ index 00000000..e461d2e9
 +    report = _bump_multi(source, source)
 +    assert report.bump is griffe.Bump.PATCH
 +    assert not report.changes
++
++
++def _two_depths(package: str, signature: str) -> dict:
++    return {
++        "__init__.py": f'from {package}._impl import f as Z\nfrom {package} import sub\n\n__all__ = ["Z", "sub"]\n',
++        "_impl.py": f'def f({signature}):\n    """D."""\n',
++        "sub.py": f'from {package}._impl import f as A\n\n__all__ = ["A"]\n',
++    }
++
++
++def test_shortest_exported_path_wins_over_the_alphabet() -> None:
++    # `f` is exported as `Z` and as `sub.A`. `sub.A` sorts first, so only the
++    # segment count can put the change on `Z`.
++    report = _bump_multi(_two_depths("semold", "a, b"), _two_depths("semnew", "a"))
++    assert report.bump is griffe.Bump.MAJOR
++    assert [change.path for change in report.changes] == ["Z"]
++
++
++def test_several_breakages_on_one_path_stay_consistent_across_the_report() -> None:
++    old = 'def t(a, b, c):\n    """D."""\n\n__all__ = ["t"]\n'
++    new = 'def t(a):\n    """D."""\n\n__all__ = ["t"]\n'
++    report = _bump(old, new)
++    breaking_changes = report.changes_of_kind(griffe.ChangeKind.BREAKING)
++    assert len(breaking_changes) == 2
++    assert len(report.breaking) == 2
++    assert report.counts[griffe.ChangeKind.BREAKING.value] == 2
++    # Each entry keeps its own detail rather than collapsing onto one.
++    assert len({change.detail for change in breaking_changes}) == 2
++    payload = report.as_dict()
++    assert payload["breaking"] == [
++        change for change in payload["changes"] if change["kind"] == griffe.ChangeKind.BREAKING.value
++    ]
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0
