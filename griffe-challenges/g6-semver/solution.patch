@@ -1,5 +1,5 @@
 diff --git a/packages/griffecli/src/griffecli/__init__.py b/packages/griffecli/src/griffecli/__init__.py
-index b7c23fc..4c9bd1c 100644
+index b7c23fc1..4c9bd1cd 100644
 --- a/packages/griffecli/src/griffecli/__init__.py
 +++ b/packages/griffecli/src/griffecli/__init__.py
 @@ -16,7 +16,7 @@ This package provides command-line tools for interacting with griffe.
@@ -18,7 +18,7 @@ index b7c23fc..4c9bd1c 100644
 +    "semver",
  ]
 diff --git a/packages/griffecli/src/griffecli/_internal/cli.py b/packages/griffecli/src/griffecli/_internal/cli.py
-index 232c1e7..9e8254d 100644
+index 232c1e74..9e8254d8 100644
 --- a/packages/griffecli/src/griffecli/_internal/cli.py
 +++ b/packages/griffecli/src/griffecli/_internal/cli.py
 @@ -132,7 +132,7 @@ def get_parser() -> argparse.ArgumentParser:
@@ -183,7 +183,7 @@ index 232c1e7..9e8254d 100644
 +    commands: dict[str, Callable[..., int]] = {"check": check, "dump": dump, "semver": semver}
      return commands[subcommand](**opts_dict)
 diff --git a/packages/griffelib/src/griffe/__init__.py b/packages/griffelib/src/griffe/__init__.py
-index a559e0f..d250bab 100644
+index a559e0fd..d250babc 100644
 --- a/packages/griffelib/src/griffe/__init__.py
 +++ b/packages/griffelib/src/griffe/__init__.py
 @@ -250,6 +250,8 @@ from griffe._internal.docstrings.utils import docstring_warning, parse_docstring
@@ -238,7 +238,7 @@ index a559e0f..d250bab 100644
  
      def __getattr__(attr: str) -> object:
 diff --git a/packages/griffelib/src/griffe/_internal/enumerations.py b/packages/griffelib/src/griffe/_internal/enumerations.py
-index 17e346a..32a22da 100644
+index 17e346aa..32a22da3 100644
 --- a/packages/griffelib/src/griffe/_internal/enumerations.py
 +++ b/packages/griffelib/src/griffe/_internal/enumerations.py
 @@ -199,3 +199,29 @@ class ObjectKind(str, Enum):
@@ -273,10 +273,10 @@ index 17e346a..32a22da 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 0000000..690cb8a
+index 00000000..f0844253
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,636 @@
+@@ -0,0 +1,656 @@
 +from __future__ import annotations
 +
 +import re
@@ -560,19 +560,20 @@ index 0000000..690cb8a
 +def _iter_public(
 +    obj: Object,
 +    path: str,
-+    seen: set[str] | None = None,
++    seen: frozenset[str] = frozenset(),
 +) -> Iterator[tuple[str, Object]]:
-+    """Yield `(path, object)` for every public object reachable from `obj`.
++    """Yield `(path, object)` for every public path that reaches an object.
 +
 +    Aliases are followed to their targets; unresolved aliases are skipped so a
 +    broken re-export never aborts the whole walk. A re-exported class or module
 +    is descended into under its exported path, so nested members behind a
-+    re-export are compared under the name a caller actually sees. The `seen` set
-+    of canonical target paths guards against alias cycles, which the plain
-+    definition tree cannot contain but mutual re-exports can.
++    re-export are reachable under the name a caller actually sees. Every export
++    of an object is yielded, not just the first one found: picking which of them
++    to compare under is `_public_index`'s job, and it must not depend on the
++    order the imports happen to appear in. `seen` holds the canonical targets
++    already entered on the current branch, which stops an alias cycle without
++    hiding a second, equally public export.
 +    """
-+    if seen is None:
-+        seen = set()
 +    for name, member in obj.members.items():
 +        if not member.is_public:
 +            continue
@@ -586,8 +587,7 @@ index 0000000..690cb8a
 +            target = member
 +        yield member_path, target  # ty:ignore[invalid-yield]
 +        if (target.is_module or target.is_class) and target.path not in seen:
-+            seen.add(target.path)
-+            yield from _iter_public(target, member_path, seen)
++            yield from _iter_public(target, member_path, seen | {target.path})
 +
 +
 +def _relative(path: str) -> str:
@@ -602,21 +602,37 @@ index 0000000..690cb8a
 +    return rest or path
 +
 +
++def _index_key(path: str) -> tuple[int, str]:
++    """Rank an exported path: fewest segments first, then alphabetically."""
++    return (path.count(".") + 1, path)
++
++
 +def _public_index(module: Module, ignore: frozenset[str]) -> dict[str, Object]:
 +    """Map every public object's exported, package-relative path to the object.
 +
 +    Keys are the paths under which the objects are exposed, relative to the
 +    package name, so the comparison follows the public surface users import. A
 +    re-exported object is tracked under the exported name rather than the
-+    canonical definition path its target carries. Any object whose top-level
-+    exported name is in `ignore` is left out of the comparison entirely.
++    canonical definition path its target carries.
++
++    An object can be exported under several names. Only one of them is compared,
++    chosen from the surviving paths by fewest segments and then alphabetically,
++    so the choice is the same in both models however the imports happen to be
++    ordered, and so a shorter re-export always wins over the definition site.
++    Names in `ignore` are dropped before that choice is made, which keeps an
++    ignored alias from deciding the path of an object still exported elsewhere.
 +    """
-+    result: dict[str, Object] = {}
++    candidates: dict[str, list[str]] = {}
++    targets: dict[str, Object] = {}
 +    for public_path, target in _iter_public(module, module.name):
 +        relative = _relative(public_path)
 +        if relative.split(".", 1)[0] in ignore:
 +            continue
-+        result.setdefault(relative, target)
++        candidates.setdefault(target.path, []).append(relative)
++        targets[target.path] = target
++    result: dict[str, Object] = {}
++    for canonical, paths in candidates.items():
++        result[min(paths, key=_index_key)] = targets[canonical]
 +    return result
 +
 +
@@ -698,7 +714,11 @@ index 0000000..690cb8a
 +    new_bases = _base_names(new)
 +    if old_bases == new_bases:
 +        return None
-+    if any(base not in new_bases for base in old_bases):
++    kept = [base for base in new_bases if base in old_bases]
++    if kept != old_bases:
++        # A base disappeared, or the surviving ones were reordered. Base order
++        # drives the method resolution order, so neither is a class that only
++        # added bases.
 +        return None
 +    gained = [base for base in new_bases if base not in old_bases]
 +    if not gained:

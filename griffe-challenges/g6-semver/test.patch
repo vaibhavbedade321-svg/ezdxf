@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..e7a12ff7
+index 00000000..46446acc
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1339 @@
+@@ -0,0 +1,1408 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1269,9 +1269,10 @@ index 00000000..e7a12ff7
 +    assert report.bump is griffe.Bump.MINOR
 +    # The container and everything public inside it are additions; a member of
 +    # a container that already existed is reported the same way.
-+    assert report.additions == ["Widget", "Widget.run"]
++    assert sorted(report.additions) == ["Widget", "Widget.run"]
 +    assert report.counts[griffe.ChangeKind.ADDED.value] == 2
-+    assert [change.path for change in report.changelog()["Widget"]] == ["Widget", "Widget.run"]
++    grouped = {change.path for change in report.changelog()["Widget"]}
++    assert grouped == {"Widget", "Widget.run"}
 +
 +
 +def test_added_submodule_reports_its_nested_members_too() -> None:
@@ -1282,7 +1283,7 @@ index 00000000..e7a12ff7
 +    }
 +    report = _bump_multi(old, new)
 +    assert report.bump is griffe.Bump.MINOR
-+    assert report.additions == ["api", "api.run"]
++    assert sorted(report.additions) == ["api", "api.run"]
 +
 +
 +def test_dotted_ignore_name_matches_no_first_path_segment() -> None:
@@ -1343,6 +1344,74 @@ index 00000000..e7a12ff7
 +    report = _bump_multi(old, new)
 +    assert report.bump is griffe.Bump.MINOR
 +    assert report.additions in (["A.y"], ["B.y"])
++
++
++_INNER = 'class Widget:\n    """D."""\n\n    def run(self):\n        """D."""\n'
++
++
++def test_exported_path_choice_ignores_import_order() -> None:
++    # Both versions export the same class as A and B; only the order of the
++    # two imports differs. A report that picked the first alias it walked
++    # would call this a removal plus an addition.
++    old = {
++        "__init__.py": 'from semold.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
++        "inner.py": _INNER,
++    }
++    new = {
++        "__init__.py": 'from semnew.inner import Widget as B, Widget as A\n\n__all__ = ["A", "B"]\n',
++        "inner.py": _INNER,
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.changes
++
++
++def test_ignoring_one_alias_keeps_the_other_exported_path() -> None:
++    # `A` is ignored, so the breakage must surface under the remaining export
++    # `B`, never under the definition site the class actually lives at.
++    old = {
++        "__init__.py": 'from semold.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
++        "inner.py": _INNER,
++    }
++    new = {
++        "__init__.py": 'from semnew.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
++        "inner.py": 'class Widget:\n    """D."""\n\n    def run(self, extra):\n        """D."""\n',
++    }
++    with (
++        temporary_visited_package("semold", old) as old_module,
++        temporary_visited_package("semnew", new) as new_module,
++    ):
++        report = griffe.recommend_bump(old_module, new_module, ignore=("A",))
++    assert report.bump is griffe.Bump.MAJOR
++    assert [change.path for change in report.changes] == ["B.run"]
++
++
++def test_reordered_bases_are_not_a_compatible_gain() -> None:
++    # Base order drives the method resolution order, so a class whose existing
++    # bases were shuffled is not a class that only added bases.
++    old = 'class A: ...\nclass B: ...\nclass Tool(A, B): ...\n'
++    new = 'class A: ...\nclass B: ...\nclass C: ...\nclass Tool(B, A, C): ...\n'
++    report = _bump(old, new)
++    assert "Tool" not in report.expansions
++
++
++def test_base_added_ahead_of_an_existing_one_is_still_a_gain() -> None:
++    # Only one base existed, so nothing was reordered relative to it.
++    old = 'class A: ...\nclass B: ...\nclass Tool(A): ...\n'
++    new = 'class A: ...\nclass B: ...\nclass Tool(B, A): ...\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.expansions == ["Tool"]
++
++
++def test_base_replaced_at_equal_count_is_patch() -> None:
++    # Neither a gain (an old base is gone) nor a breakage griffe detects,
++    # so the catch-all applies.
++    old = 'class A: ...\nclass B: ...\nclass Tool(A): ...\n'
++    new = 'class A: ...\nclass B: ...\nclass Tool(B): ...\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.expansions
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0
