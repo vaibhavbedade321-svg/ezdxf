@@ -2,7 +2,7 @@ Add `recommend_bump(old, new, ignore=())` and `bump_between(package, old_path, n
 
 Both are importable from `griffe`, with `Bump`, `ChangeKind` and `BumpReport`. `recommend_bump` compares two loaded models and returns a `BumpReport`. `bump_between` loads it from each search path, never the working directory unless asked, forwarding load options to both.
 
-Objects compare by exported path relative to the package name, not definition site; one exported under several names uses the shortest, alphabetically first among ties, after `ignore` applies. Gaining or losing a spare name is an addition or removal. Nested members compare too, including inside a new or re-exported container. A name in `ignore` matches a whole first path segment and excludes it, breakage included. `__all__` lists exactly what a module exports, even when empty.
+Objects compare by exported path relative to the package name, not definition site. Nested members compare too, including inside a new or re-exported container. A name in `ignore` matches a whole first path segment and excludes it, breakage included. `__all__` lists exactly what a module exports, even when empty.
 
 A breaking change or a public object leaving the surface recommends `Bump.MAJOR`. An added public object, one gaining a compatible capability, or one newly carrying a `deprecated` decorator, wherever defined, recommends `Bump.MINOR`. Anything else recommends `Bump.PATCH`.
 

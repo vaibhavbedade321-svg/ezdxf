@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..af5747c8
+index 00000000..4472a9cb
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,2064 @@
+@@ -0,0 +1,1714 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1326,65 +1326,7 @@ index 00000000..af5747c8
 +    assert report.expansions == ["x"]
 +
 +
-+def test_object_exported_twice_is_reported_under_one_path() -> None:
-+    # `Widget` is reachable as both `A` and `B`. Each object is compared under
-+    # a single exported path, so the added method is reported once, under one
-+    # of the two names rather than both and never under the definition site.
-+    old = {
-+        "__init__.py": 'from semold.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
-+        "inner.py": 'class Widget:\n    """D."""\n\n    def run(self):\n        """D."""\n',
-+    }
-+    new = {
-+        "__init__.py": 'from semnew.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
-+        "inner.py": (
-+            'class Widget:\n    """D."""\n\n'
-+            '    def run(self):\n        """D."""\n\n'
-+            '    def y(self):\n        """D."""\n'
-+        ),
-+    }
-+    report = _bump_multi(old, new)
-+    assert report.bump is griffe.Bump.MINOR
-+    assert report.additions in (["A.y"], ["B.y"])
-+
-+
 +_INNER = 'class Widget:\n    """D."""\n\n    def run(self):\n        """D."""\n'
-+
-+
-+def test_exported_path_choice_ignores_import_order() -> None:
-+    # Both versions export the same class as A and B; only the order of the
-+    # two imports differs. A report that picked the first alias it walked
-+    # would call this a removal plus an addition.
-+    old = {
-+        "__init__.py": 'from semold.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
-+        "inner.py": _INNER,
-+    }
-+    new = {
-+        "__init__.py": 'from semnew.inner import Widget as B, Widget as A\n\n__all__ = ["A", "B"]\n',
-+        "inner.py": _INNER,
-+    }
-+    report = _bump_multi(old, new)
-+    assert report.bump is griffe.Bump.PATCH
-+    assert not report.changes
-+
-+
-+def test_ignoring_one_alias_keeps_the_other_exported_path() -> None:
-+    # `A` is ignored, so the breakage must surface under the remaining export
-+    # `B`, never under the definition site the class actually lives at.
-+    old = {
-+        "__init__.py": 'from semold.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
-+        "inner.py": _INNER,
-+    }
-+    new = {
-+        "__init__.py": 'from semnew.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
-+        "inner.py": 'class Widget:\n    """D."""\n\n    def run(self, extra):\n        """D."""\n',
-+    }
-+    with (
-+        temporary_visited_package("semold", old) as old_module,
-+        temporary_visited_package("semnew", new) as new_module,
-+    ):
-+        report = griffe.recommend_bump(old_module, new_module, ignore=("A",))
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert [change.path for change in report.changes] == ["B.run"]
 +
 +
 +def test_reordered_bases_are_not_a_compatible_gain() -> None:
@@ -1456,21 +1398,6 @@ index 00000000..af5747c8
 +            report.bump_version(version)
 +
 +
-+def test_public_re_export_of_a_missing_dependency_still_reports(tmp_path) -> None:
-+    # The dependency is not on the search path, so the alias never resolves.
-+    # Its exported name is still part of the surface, and losing it breaks.
-+    for version, body in (
-+        ("old", 'from dependency import Widget\n\n__all__ = ["Widget"]\n'),
-+        ("new", 'def keep():\n    """D."""\n\n__all__ = ["keep"]\n'),
-+    ):
-+        package = tmp_path / version / "extpkg"
-+        package.mkdir(parents=True)
-+        (package / "__init__.py").write_text(body, encoding="utf8")
-+    report = griffe.bump_between("extpkg", str(tmp_path / "old"), str(tmp_path / "new"))
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert "Widget" in {change.path for change in report.changes}
-+
-+
 +def test_member_inherited_from_a_private_base_is_part_of_the_surface() -> None:
 +    # `_Base` is not public, but `Public` exposes what it inherits, so adding
 +    # a method to the base adds it to the public surface.
@@ -1538,81 +1465,6 @@ index 00000000..af5747c8
 +    assert not ignored.changes
 +
 +
-+_ALIASED = 'def f():\n    """D."""\n'
-+
-+
-+def _alias_versions(old_names: str, new_names: str) -> tuple[dict, dict]:
-+    return (
-+        {"__init__.py": dedent(old_names), "inner.py": _ALIASED},
-+        {"__init__.py": dedent(new_names), "inner.py": _ALIASED},
-+    )
-+
-+
-+def test_dropping_a_spare_export_name_is_a_removal() -> None:
-+    # `f` is still exported as `A`, so it is compared under `A` in both
-+    # models. `from pkg import B` stops working all the same.
-+    old, new = _alias_versions(
-+        'from semold.inner import f as A, f as B\n\n__all__ = ["A", "B"]\n',
-+        'from semnew.inner import f as A\n\n__all__ = ["A"]\n',
-+    )
-+    report = _bump_multi(old, new)
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert report.removals == ["B"]
-+    assert not report.breaking
-+
-+
-+def test_adding_a_spare_export_name_is_an_addition() -> None:
-+    old, new = _alias_versions(
-+        'from semold.inner import f as A\n\n__all__ = ["A"]\n',
-+        'from semnew.inner import f as A, f as B\n\n__all__ = ["A", "B"]\n',
-+    )
-+    report = _bump_multi(old, new)
-+    assert report.bump is griffe.Bump.MINOR
-+    assert report.additions == ["B"]
-+
-+
-+def test_dropping_the_compared_name_leaves_one_entry() -> None:
-+    # `A` was the compared path and is gone; `B` was already exported, so it
-+    # is not an addition just because the comparison moved onto it.
-+    old, new = _alias_versions(
-+        'from semold.inner import f as A, f as B\n\n__all__ = ["A", "B"]\n',
-+        'from semnew.inner import f as B\n\n__all__ = ["B"]\n',
-+    )
-+    report = _bump_multi(old, new)
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert [change.path for change in report.changes] == ["A"]
-+
-+
-+def test_an_ignored_spare_name_can_disappear_freely() -> None:
-+    old, new = _alias_versions(
-+        'from semold.inner import f as A, f as B\n\n__all__ = ["A", "B"]\n',
-+        'from semnew.inner import f as A\n\n__all__ = ["A"]\n',
-+    )
-+    with (
-+        temporary_visited_package("semold", old) as old_module,
-+        temporary_visited_package("semnew", new) as new_module,
-+    ):
-+        report = griffe.recommend_bump(old_module, new_module, ignore=("B",))
-+    assert report.bump is griffe.Bump.PATCH
-+    assert not report.changes
-+
-+
-+def test_a_member_added_to_a_twice_exported_class_is_reported_once() -> None:
-+    # The extra spellings of the class must not turn one new method into
-+    # several additions.
-+    old = {
-+        "__init__.py": 'from semold.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
-+        "inner.py": 'class Widget:\n    """D."""\n',
-+    }
-+    new = {
-+        "__init__.py": 'from semnew.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
-+        "inner.py": 'class Widget:\n    """D."""\n\n    def y(self):\n        """D."""\n',
-+    }
-+    report = _bump_multi(old, new)
-+    assert report.bump is griffe.Bump.MINOR
-+    assert report.additions == ["A.y"]
-+
-+
 +def test_empty_all_exports_nothing() -> None:
 +    # `Object.is_public` documents that a module declaring `__all__` makes
 +    # everything not listed private; its implementation tests the list for
@@ -1656,36 +1508,6 @@ index 00000000..af5747c8
 +    assert not report.changes
 +
 +
-+def test_dropping_the_preferred_name_is_a_removal_not_a_breakage() -> None:
-+    # `f` is still exported, as `B`. The name `A` is what went away.
-+    old, new = _alias_versions(
-+        'from semold.inner import f as A, f as B\n\n__all__ = ["A", "B"]\n',
-+        'from semnew.inner import f as B\n\n__all__ = ["B"]\n',
-+    )
-+    report = _bump_multi(old, new)
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert report.removals == ["A"]
-+    assert not report.breaking
-+
-+
-+def test_a_breakage_behind_a_surviving_name_is_still_reported() -> None:
-+    # The preferred name goes and the signature breaks in the same release:
-+    # the lost name is a removal, and the break belongs to the name that is
-+    # still there for callers to hit.
-+    old = {
-+        "__init__.py": 'from semold.inner import f as A, f as B\n\n__all__ = ["A", "B"]\n',
-+        "inner.py": 'def f():\n    """D."""\n',
-+    }
-+    new = {
-+        "__init__.py": 'from semnew.inner import f as B\n\n__all__ = ["B"]\n',
-+        "inner.py": 'def f(a):\n    """D."""\n',
-+    }
-+    report = _bump_multi(old, new)
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert report.removals == ["A"]
-+    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["B"]
-+
-+
 +def test_bump_between_forwards_an_explicit_try_relative_path(tmp_path, monkeypatch) -> None:
 +    # By default the two roots decide the comparison, so the `vpkg` in the
 +    # working directory is ignored and the real difference shows. A caller who
@@ -1702,116 +1524,15 @@ index 00000000..af5747c8
 +    assert not relative.changes
 +
 +
-+def _moved_impl(old_exports: str, new_exports: str, new_body: str = 'def f():\n    """D."""\n') -> tuple[dict, dict]:
-+    body = 'def f():\n    """D."""\n'
-+    return (
-+        {"__init__.py": dedent(old_exports), "_old_impl.py": body},
-+        {"__init__.py": dedent(new_exports), "_new_impl.py": dedent(new_body)},
-+    )
-+
-+
-+def test_moving_an_implementation_still_reports_a_dropped_spare_name() -> None:
-+    # The object is recognised by the names it answers to, not by where it is
-+    # defined, so `A` ties the two versions together even though `f` moved.
-+    old, new = _moved_impl(
-+        'from semold._old_impl import f as A, f as B\n\n__all__ = ["A", "B"]\n',
-+        'from semnew._new_impl import f as A\n\n__all__ = ["A"]\n',
-+    )
-+    report = _bump_multi(old, new)
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert report.removals == ["B"]
-+
-+
-+def test_moving_an_implementation_still_reports_a_gained_spare_name() -> None:
-+    old, new = _moved_impl(
-+        'from semold._old_impl import f as A\n\n__all__ = ["A"]\n',
-+        'from semnew._new_impl import f as A, f as B\n\n__all__ = ["A", "B"]\n',
-+    )
-+    report = _bump_multi(old, new)
-+    assert report.bump is griffe.Bump.MINOR
-+    assert report.additions == ["B"]
-+
-+
 +def test_moving_an_implementation_alone_changes_nothing() -> None:
-+    # Definition site is not part of the comparison.
-+    old, new = _moved_impl(
-+        'from semold._old_impl import f as A\n\n__all__ = ["A"]\n',
-+        'from semnew._new_impl import f as A\n\n__all__ = ["A"]\n',
-+    )
++    # Definition site is not part of the comparison: the same function
++    # exported under the same name from a different module is no change.
++    body = 'def f():\n    """D."""\n'
++    old = {"__init__.py": 'from semold._old_impl import f as A\n\n__all__ = ["A"]\n', "_old_impl.py": body}
++    new = {"__init__.py": 'from semnew._new_impl import f as A\n\n__all__ = ["A"]\n', "_new_impl.py": body}
 +    report = _bump_multi(old, new)
 +    assert report.bump is griffe.Bump.PATCH
 +    assert not report.changes
-+
-+
-+def test_moving_an_implementation_keeps_its_breakage_and_its_lost_name() -> None:
-+    old, new = _moved_impl(
-+        'from semold._old_impl import f as A, f as B\n\n__all__ = ["A", "B"]\n',
-+        'from semnew._new_impl import f as A\n\n__all__ = ["A"]\n',
-+        'def f(a):\n    """D."""\n',
-+    )
-+    report = _bump_multi(old, new)
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert report.removals == ["B"]
-+    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["A"]
-+
-+
-+def _external_versions(tmp_path, version: str, dep1_signature: str):
-+    """Build a package re-exporting same-named functions from two dependencies."""
-+    base = tmp_path / version
-+    for name, body in (
-+        ("dep1", f'def f({dep1_signature}):\n    """D."""\n'),
-+        ("dep2", 'def f(a, b):\n    """D."""\n'),
-+    ):
-+        module = base / name
-+        module.mkdir(parents=True)
-+        (module / "__init__.py").write_text(body, encoding="utf8")
-+    package = base / "extpkg"
-+    package.mkdir(parents=True)
-+    (package / "__init__.py").write_text(
-+        'from dep1 import f as one\nfrom dep2 import f as two\n\n__all__ = ["one", "two"]\n',
-+        encoding="utf8",
-+    )
-+    collection = griffe.ModulesCollection()
-+    for name in ("dep1", "dep2", "extpkg"):
-+        griffe.load(name, search_paths=[str(base)], modules_collection=collection, try_relative_path=False)
-+    return collection["extpkg"]
-+
-+
-+def test_breakage_is_reported_under_the_right_external_re_export(tmp_path) -> None:
-+    # `one` and `two` reach same-named functions in different dependencies.
-+    # Only `dep1.f` changes, so only `one` may carry the breakage.
-+    old = _external_versions(tmp_path, "old", "a, b")
-+    new = _external_versions(tmp_path, "new", "a")
-+    report = griffe.recommend_bump(old, new)
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert [(change.kind, change.path) for change in report.changes] == [
-+        (griffe.ChangeKind.BREAKING, "one"),
-+    ]
-+
-+
-+def test_unresolved_re_export_present_in_both_versions_is_not_an_error() -> None:
-+    # The dependency was never loaded, so there is nothing to compare behind
-+    # the name. It still holds its place on the surface.
-+    source = {"__init__.py": 'from dependency import Widget\n\ndef keep():\n    """D."""\n\n__all__ = ["Widget", "keep"]\n'}
-+    report = _bump_multi(source, source)
-+    assert report.bump is griffe.Bump.PATCH
-+    assert not report.changes
-+
-+
-+def _two_depths(package: str, signature: str) -> dict:
-+    return {
-+        "__init__.py": f'from {package}._impl import f as Z\nfrom {package} import sub\n\n__all__ = ["Z", "sub"]\n',
-+        "_impl.py": f'def f({signature}):\n    """D."""\n',
-+        "sub.py": f'from {package}._impl import f as A\n\n__all__ = ["A"]\n',
-+    }
-+
-+
-+def test_shortest_exported_path_wins_over_the_alphabet() -> None:
-+    # `f` is exported as `Z` and as `sub.A`. `sub.A` sorts first, so only the
-+    # segment count can put the change on `Z`.
-+    report = _bump_multi(_two_depths("semold", "a, b"), _two_depths("semnew", "a"))
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert [change.path for change in report.changes] == ["Z"]
 +
 +
 +def test_several_breakages_on_one_path_stay_consistent_across_the_report() -> None:
@@ -1997,77 +1718,6 @@ index 00000000..af5747c8
 +    report = _bump_multi(old, new)
 +    assert report.bump is griffe.Bump.MAJOR
 +    assert "extra" in {change.path for change in report.changes}
-+
-+
-+_ABSENT_BOTH = 'from dependency import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n'
-+_ABSENT_ONE = 'from dependency import Widget as A\n\n__all__ = ["A"]\n'
-+
-+
-+def test_dropping_a_spare_unresolved_re_export_is_a_removal() -> None:
-+    # `dependency` is not loaded, so neither alias resolves, but both record
-+    # the same import target and are therefore one object under two names.
-+    report = _bump_multi({"__init__.py": _ABSENT_BOTH}, {"__init__.py": _ABSENT_ONE})
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert report.removals == ["B"]
-+    assert not report.breaking
-+
-+
-+def test_gaining_a_spare_unresolved_re_export_is_an_addition() -> None:
-+    report = _bump_multi({"__init__.py": _ABSENT_ONE}, {"__init__.py": _ABSENT_BOTH})
-+    assert report.bump is griffe.Bump.MINOR
-+    assert report.additions == ["B"]
-+
-+
-+def test_an_unresolved_re_export_leaving_entirely_is_breaking() -> None:
-+    old = {"__init__.py": 'from dependency import Widget as A\n\ndef keep():\n    """D."""\n\n__all__ = ["A", "keep"]\n'}
-+    new = {"__init__.py": 'def keep():\n    """D."""\n\n__all__ = ["keep"]\n'}
-+    report = _bump_multi(old, new)
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["A"]
-+
-+
-+_REBIND_OLD = {
-+    "__init__.py": 'from semold._impl import f as A, f as B\n\n__all__ = ["A", "B"]\n',
-+    "_impl.py": 'def f(a, b):\n    """D."""\n',
-+}
-+
-+
-+def test_rebinding_an_export_to_an_incompatible_object_is_breaking() -> None:
-+    # `A` still reaches `f`, but `B` now reaches `g`, which drops a parameter.
-+    # Callers of `B` break, and neither name left the surface.
-+    new = {
-+        "__init__.py": 'from semnew._impl import f as A, g as B\n\n__all__ = ["A", "B"]\n',
-+        "_impl.py": 'def f(a, b):\n    """D."""\n\ndef g(a):\n    """D."""\n',
-+    }
-+    report = _bump_multi(_REBIND_OLD, new)
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["B"]
-+    assert not report.removals
-+    assert not report.additions
-+
-+
-+def test_rebinding_an_export_to_a_compatible_object_is_patch() -> None:
-+    # Same shape, so nothing a caller of either name can notice.
-+    new = {
-+        "__init__.py": 'from semnew._impl import f as A, g as B\n\n__all__ = ["A", "B"]\n',
-+        "_impl.py": 'def f(a, b):\n    """D."""\n\ndef g(a, b):\n    """D."""\n',
-+    }
-+    report = _bump_multi(_REBIND_OLD, new)
-+    assert report.bump is griffe.Bump.PATCH
-+    assert not report.changes
-+
-+
-+def test_an_alias_group_that_splits_reports_only_the_broken_path() -> None:
-+    # Both names are rebound at once, so no overlap survives to anchor the
-+    # group; only the path whose new object is incompatible may be reported.
-+    new = {
-+        "__init__.py": 'from semnew._impl import g as A, h as B\n\n__all__ = ["A", "B"]\n',
-+        "_impl.py": 'def g(a, b):\n    """D."""\n\ndef h(a):\n    """D."""\n',
-+    }
-+    report = _bump_multi(_REBIND_OLD, new)
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert [change.path for change in report.changes] == ["B"]
-+    assert not report.removals
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0
