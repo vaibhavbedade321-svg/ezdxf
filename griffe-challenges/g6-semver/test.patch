@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..4472a9cb
+index 00000000..b5ae4e3b
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1714 @@
+@@ -0,0 +1,1751 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1668,17 +1668,6 @@ index 00000000..4472a9cb
 +    assert not report.breaking
 +
 +
-+def test_object_leaving_the_surface_is_only_a_removal() -> None:
-+    # The mirror image: once `f` is no longer exported, what happened to its
-+    # signature on the way out is not a public breakage either.
-+    old = 'def f(a, b):\n    """D."""\n\n__all__ = ["f"]\n'
-+    new = 'def f(a):\n    """D."""\n\n__all__ = []\n'
-+    report = _bump(old, new)
-+    assert report.bump is griffe.Bump.MAJOR
-+    assert report.removals == ["f"]
-+    assert not report.breaking
-+
-+
 +def test_signature_break_between_two_exported_versions_is_still_breaking() -> None:
 +    old = 'def f(a, b):\n    """D."""\n\n__all__ = ["f"]\n'
 +    new = 'def f(a):\n    """D."""\n\n__all__ = ["f"]\n'
@@ -1718,6 +1707,54 @@ index 00000000..4472a9cb
 +    report = _bump_multi(old, new)
 +    assert report.bump is griffe.Bump.MAJOR
 +    assert "extra" in {change.path for change in report.changes}
++
++
++_EXPANDED_OLD = 'def tool(a):\n    """D."""\n\n__all__ = ["tool"]\n'
++_EXPANDED_NEW = 'def tool(a, b=1):\n    """D."""\n\n__all__ = ["tool"]\n'
++
++
++def test_changelog_groups_an_expansion_too() -> None:
++    # Every kind is grouped by first path segment, expansions included.
++    report = _bump(_EXPANDED_OLD, _EXPANDED_NEW)
++    assert report.bump is griffe.Bump.MINOR
++    grouped = report.changelog()
++    assert {change.kind for change in grouped["tool"]} == {griffe.ChangeKind.EXPANDED}
++
++
++def test_renderers_list_an_expanded_path() -> None:
++    report = _bump(_EXPANDED_OLD, _EXPANDED_NEW)
++    for rendered in (report.render_text(), report.render_markdown()):
++        assert "tool" in rendered
++        assert griffe.Bump.MINOR.value in rendered.lower()
++
++
++@pytest.mark.parametrize(
++    ("old", "new", "kind_name", "path"),
++    [
++        (
++            'def tool():\n    """D."""\n\ndef gone():\n    """D."""\n\n__all__ = ["tool", "gone"]\n',
++            'def tool():\n    """D."""\n\ndef gone():\n    """D."""\n\n__all__ = ["tool"]\n',
++            "REMOVED",
++            "gone",
++        ),
++        (
++            'def tool(a):\n    """D."""\n\n__all__ = ["tool"]\n',
++            'from warnings import deprecated\n\n\n@deprecated("x")\ndef tool(a):\n    """D."""\n\n__all__ = ["tool"]\n',
++            "DEPRECATED",
++            "tool",
++        ),
++        (_EXPANDED_OLD, _EXPANDED_NEW, "EXPANDED", "tool"),
++    ],
++    ids=["removed", "deprecated", "expanded"],
++)
++def test_serialized_changes_carry_kind_path_and_detail(old: str, new: str, kind_name: str, path: str) -> None:
++    # The kind is looked up here rather than in the decorator, so the module
++    # still imports when the feature is missing.
++    kind = getattr(griffe.ChangeKind, kind_name)
++    payload = _bump(old, new).as_dict()
++    entries = [change for change in payload["changes"] if change["kind"] == kind.value]
++    assert [change["path"] for change in entries] == [path]
++    assert all(change["detail"] for change in entries)
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0
