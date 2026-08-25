@@ -321,16 +321,16 @@ index 17e346aa..32a22da3 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 00000000..847e3605
+index 00000000..72f7bd2c
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,826 @@
+@@ -0,0 +1,842 @@
 +from __future__ import annotations
 +
 +import re
 +from typing import TYPE_CHECKING, Any
 +
-+from griffe._internal.diff import find_breaking_changes
++from griffe._internal.diff import ObjectRemovedBreakage, find_breaking_changes
 +from griffe._internal.enumerations import Bump, ChangeKind, ParameterKind
 +from griffe._internal.exceptions import AliasResolutionError, CyclicAliasError
 +
@@ -771,15 +771,16 @@ index 00000000..847e3605
 +    for public_path, target in _iter_public(module, module.name):
 +        relative = _relative(public_path, module.name, module.path)
 +        if relative.split(".", 1)[0] not in ignore:
-+            paths[relative] = target.path
++            # The target is named relative to the package too, so the two
++            # models agree on it however each was loaded.
++            paths[relative] = _relative(target.path, module.name, module.path)
 +    return paths
 +
 +
 +def _spare_names(
 +    names: dict[str, str],
 +    other_names: dict[str, str],
-+    index: dict[str, Object],
-+    other_index: dict[str, Object],
++    other_targets: set[str],
 +) -> set[str]:
 +    """Return exported names this model has and the other does not.
 +
@@ -791,19 +792,15 @@ index 00000000..847e3605
 +    Parameters:
 +        names: This model's exported paths, mapped to their targets.
 +        other_names: The other model's exported paths.
-+        index: This model's compared paths.
-+        other_index: The other model's compared paths.
++        other_targets: The objects the other model exports.
 +
 +    Returns:
 +        The exported names present only in this model.
 +    """
-+    chosen = {obj.path: path for path, obj in index.items()}
 +    return {
 +        path
 +        for path, target in names.items()
-+        if path not in other_names
-+        and path not in index
-+        and chosen.get(target) in other_index
++        if path not in other_names and target in other_targets
 +    }
 +
 +
@@ -1028,11 +1025,12 @@ index 00000000..847e3605
 +    from griffe._internal.loader import load  # noqa: PLC0415
 +
 +    shared = list(search_paths)
-+    # The two roots define the comparison, so a same-named package sitting in
-+    # the working directory must never be picked up instead of either of them.
-+    load_options.pop("try_relative_path", None)
-+    old = load(package, search_paths=[old_path, *shared], try_relative_path=False, **load_options)
-+    new = load(package, search_paths=[new_path, *shared], try_relative_path=False, **load_options)
++    # The two roots define the comparison, so by default a same-named package
++    # sitting in the working directory must not be picked up instead of either
++    # of them. A caller who asks for the loader's usual behaviour still gets it.
++    relative = load_options.pop("try_relative_path", False)
++    old = load(package, search_paths=[old_path, *shared], try_relative_path=relative, **load_options)
++    new = load(package, search_paths=[new_path, *shared], try_relative_path=relative, **load_options)
 +    return recommend_bump(old, new, ignore=ignore)  # ty:ignore[invalid-argument-type]
 +
 +
@@ -1067,21 +1065,36 @@ index 00000000..847e3605
 +    new_index = _public_index(new, ignored)
 +
 +    roots = (old.path, new.path, old.name, new.name)
-+    to_surface = {_relative(obj.path, *roots): path for path, obj in old_index.items()}
-+    to_surface.update({_relative(obj.path, *roots): path for path, obj in new_index.items()})
++    old_names = _public_paths(old, ignored)
++    new_names = _public_paths(new, ignored)
++    old_targets = set(old_names.values())
++    new_targets = set(new_names.values())
++    old_surface = {_relative(obj.path, *roots): path for path, obj in old_index.items()}
++    new_surface = {_relative(obj.path, *roots): path for path, obj in new_index.items()}
 +
 +    def _surface(obj: Object) -> str:
++        """Name an object by a compared path, preferring one that still exists."""
 +        relative = _relative(obj.path, *roots)
-+        return to_surface.get(relative, relative)
++        was = old_surface.get(relative)
++        now = new_surface.get(relative)
++        if was is not None and (was in new_names or now is None):
++            return was
++        return now or was or relative
++
++    def _lost_spelling(breakage: Any) -> bool:
++        """Whether a removal only took one of an object's export names away."""
++        return isinstance(breakage, ObjectRemovedBreakage) and old_names.get(_surface(breakage.obj)) in new_targets
 +
 +    breaking = [
 +        breakage
 +        for breakage in breaking
 +        if _surface(breakage.obj).split(".", 1)[0] not in ignored
-+        # A breakage whose path is not one of the compared paths belongs to a
-+        # spare export of an object compared elsewhere. Losing that name is a
-+        # removal, handled below, not a change to the object itself.
-+        and _surface(breakage.obj) in old_index
++        # A breakage on a path neither model compares belongs to a spare export
++        # of an object compared elsewhere, and losing an export name is a
++        # removal rather than a change to the object itself. Both are reported
++        # by name below.
++        and (_surface(breakage.obj) in old_index or _surface(breakage.obj) in new_index)
++        and not _lost_spelling(breakage)
 +    ]
 +    breaking_paths = {_surface(breakage.obj) for breakage in breaking}
 +
@@ -1089,6 +1102,7 @@ index 00000000..847e3605
 +        _Change(ChangeKind.BREAKING, _surface(breakage.obj), _breakage_detail(breakage))
 +        for breakage in breaking
 +    ]
++
 +    def _under_breakage(path: str) -> bool:
 +        """Whether a breaking change to an ancestor already covers this path.
 +
@@ -1099,24 +1113,26 @@ index 00000000..847e3605
 +        """
 +        return any(path.startswith(f"{prefix}.") for prefix in breaking_paths)
 +
-+    # Spare export names of objects compared under a different path. Gaining
-+    # one adds a way to import the object; losing one takes it away.
-+    old_names = _public_paths(old, ignored)
-+    new_names = _public_paths(new, ignored)
++    # An export name the other model does not have, for an object it does
++    # still export. Gaining one adds a way to import the object; losing one
++    # takes it away, whether or not that name was the compared one.
++    lost = _shallowest(_spare_names(old_names, new_names, new_targets))
 +    changes.extend(
 +        _Change(ChangeKind.REMOVED, path, "public export name removed")
-+        for path in _shallowest(_spare_names(old_names, new_names, old_index, new_index))
++        for path in lost
 +        if not _under_breakage(path)
 +    )
 +    changes.extend(
 +        _Change(ChangeKind.ADDED, path, "public export name added")
-+        for path in _shallowest(_spare_names(new_names, old_names, new_index, old_index))
++        for path in _shallowest(_spare_names(new_names, old_names, old_targets))
 +        if not _under_breakage(path)
 +    )
 +
 +    for path, old_obj in old_index.items():
 +        # A path the other model still exports, just not as the compared one,
 +        # has not left the surface.
++        if path in lost:
++            continue
 +        if path not in new_index and path not in new_names and path not in breaking_paths and not _under_breakage(path):
 +            changes.append(
 +                _Change(ChangeKind.REMOVED, path, f"public {_kind_label(old_obj)} removed"),

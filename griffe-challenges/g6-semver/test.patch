@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..1f27117f
+index 00000000..e83ec211
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1650 @@
+@@ -0,0 +1,1707 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1654,6 +1654,63 @@ index 00000000..1f27117f
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.PATCH
 +    assert not report.changes
++
++
++def test_dropping_the_preferred_name_is_a_removal_not_a_breakage() -> None:
++    # `f` is still exported, as `B`. The name `A` is what went away.
++    old, new = _alias_versions(
++        'from semold.inner import f as A, f as B\n\n__all__ = ["A", "B"]\n',
++        'from semnew.inner import f as B\n\n__all__ = ["B"]\n',
++    )
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.removals == ["A"]
++    assert not report.breaking
++
++
++def test_a_breakage_behind_a_surviving_name_is_still_reported() -> None:
++    # The preferred name goes and the signature breaks in the same release:
++    # the lost name is a removal, and the break belongs to the name that is
++    # still there for callers to hit.
++    old = {
++        "__init__.py": 'from semold.inner import f as A, f as B\n\n__all__ = ["A", "B"]\n',
++        "inner.py": 'def f():\n    """D."""\n',
++    }
++    new = {
++        "__init__.py": 'from semnew.inner import f as B\n\n__all__ = ["B"]\n',
++        "inner.py": 'def f(a):\n    """D."""\n',
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.removals == ["A"]
++    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["B"]
++
++
++def test_bump_between_forwards_an_explicit_try_relative_path(tmp_path, monkeypatch) -> None:
++    # The option defaults to False so the working directory cannot decide the
++    # comparison, but a caller asking for it explicitly still gets it rather
++    # than having it silently dropped.
++    both = 'def keep(a, b):\n    """D."""\n\n__all__ = ["keep"]\n'
++    old_root = _write_vpkg(tmp_path, "old", both)
++    new_root = _write_vpkg(tmp_path, "new", both)
++
++    from griffe._internal import loader as loader_module
++
++    seen = []
++    real_load = loader_module.load
++
++    def _record(*args, **kwargs):
++        seen.append(kwargs.get("try_relative_path"))
++        return real_load(*args, **kwargs)
++
++    monkeypatch.setattr(loader_module, "load", _record)
++
++    griffe.bump_between("vpkg", old_root, new_root)
++    assert seen == [False, False]
++
++    seen.clear()
++    griffe.bump_between("vpkg", old_root, new_root, try_relative_path=True)
++    assert seen == [True, True]
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0
