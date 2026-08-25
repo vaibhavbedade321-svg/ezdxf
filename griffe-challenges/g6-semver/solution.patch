@@ -321,10 +321,10 @@ index 17e346aa..32a22da3 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 00000000..b4b9b0fe
+index 00000000..847e3605
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,803 @@
+@@ -0,0 +1,826 @@
 +from __future__ import annotations
 +
 +import re
@@ -622,9 +622,17 @@ index 00000000..b4b9b0fe
 +    already entered on the current branch, which stops an alias cycle without
 +    hiding a second, equally public export.
 +    """
++    exports = obj.exports if obj.is_module else None  # ty:ignore[unresolved-attribute]
 +    for name, member in _members_of(obj).items():
 +        if name == "__all__":
 +            # The export list is metadata about the surface, not part of it.
++            continue
++        if exports is not None and name not in exports and not _is_submodule(member):
++            # A module that declares `__all__` exports exactly those names.
++            # `Object.is_public` tests the list for truthiness, so an empty
++            # one falls through there and everything defined looks public;
++            # an explicit empty `__all__` exports nothing. Submodules keep
++            # griffe's convention of being public unless underscored.
 +            continue
 +        try:
 +            public = member.is_public
@@ -646,6 +654,21 @@ index 00000000..b4b9b0fe
 +        yield member_path, target  # ty:ignore[invalid-yield]
 +        if (target.is_module or target.is_class) and target.path not in seen:
 +            yield from _iter_public(target, member_path, seen | {target.path})
++
++
++def _is_submodule(member: Any) -> bool:
++    """Whether a member is a module, treating an unresolvable alias as not one.
++
++    Parameters:
++        member: The member to inspect.
++
++    Returns:
++        Whether the member is a module.
++    """
++    try:
++        return bool(member.is_module)
++    except (AliasResolutionError, CyclicAliasError):
++        return False
 +
 +
 +def _members_of(obj: Object) -> dict[str, Any]:

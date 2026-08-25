@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..642851ba
+index 00000000..1f27117f
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1607 @@
+@@ -0,0 +1,1650 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1611,6 +1611,49 @@ index 00000000..642851ba
 +    report = _bump_multi(old, new)
 +    assert report.bump is griffe.Bump.MINOR
 +    assert report.additions == ["A.y"]
++
++
++def test_empty_all_exports_nothing() -> None:
++    # `Object.is_public` documents that a module declaring `__all__` makes
++    # everything not listed private; its implementation tests the list for
++    # truthiness, so an empty one falls through. An explicit `__all__ = []`
++    # exports nothing, so nothing defined below it is on the surface.
++    old = 'def kept():\n    """D."""\n\n__all__ = []\n'
++    new = 'def kept():\n    """D."""\n\ndef added():\n    """D."""\n\n__all__ = []\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.changes
++
++
++def test_empty_all_hides_removals_and_breakages() -> None:
++    old = 'def kept(a, b):\n    """D."""\n\n__all__ = []\n'
++    for new in ('__all__ = []\n', 'def kept(a):\n    """D."""\n\n__all__ = []\n'):
++        report = _bump(old, new)
++        assert report.bump is griffe.Bump.PATCH
++        assert not report.changes
++
++
++def test_a_listed_name_is_still_public_when_others_are_not() -> None:
++    # The empty case must not be read as "ignore `__all__`" in either
++    # direction: a non-empty list still exports exactly what it names.
++    old = 'def kept():\n    """D."""\n\ndef hidden():\n    """D."""\n\n__all__ = ["kept"]\n'
++    new = (
++        'def kept():\n    """D."""\n\ndef hidden(a):\n    """D."""\n\n'
++        'def added():\n    """D."""\n\n__all__ = ["kept", "added"]\n'
++    )
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions == ["added"]
++
++
++def test_empty_all_excludes_the_members_of_a_class_below_it() -> None:
++    # The check runs before recursion, so an excluded container takes its
++    # descendants with it.
++    old = 'class Tool:\n    """D."""\n\n__all__ = []\n'
++    new = 'class Tool:\n    """D."""\n\n    def run(self):\n        """D."""\n\n__all__ = []\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.changes
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0
