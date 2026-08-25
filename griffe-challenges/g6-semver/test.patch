@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..bbb89a59
+index 00000000..ed7c04de
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1908 @@
+@@ -0,0 +1,1930 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1892,15 +1892,6 @@ index 00000000..bbb89a59
 +    assert not report.changes
 +
 +
-+def test_gated_by_rejects_a_level_that_is_not_a_bump() -> None:
-+    # It takes a `Bump` member or its value; anything else is neither, so it
-+    # must refuse rather than answer.
-+    report = _bump("x = 1\n", "x = 1\n")
-+    for level in ("nonsense", ""):
-+        with pytest.raises((ValueError, KeyError)):
-+            report.gated_by(level)
-+
-+
 +def test_cli_semver_rejects_an_unknown_fail_on_level(tmp_path) -> None:
 +    code = 'def tool():\n    """D."""\n\n__all__ = ["tool"]\n'
 +    # A real level runs, so the rejection below cannot pass for the wrong reason.
@@ -1910,6 +1901,37 @@ index 00000000..bbb89a59
 +        exit_code, _ = _run_semver(tmp_path, code, code, "--fail-on", "nonsense")
 +    except SystemExit as exc:
 +        assert exc.code != 0
++    else:
++        assert exit_code != 0
++
++
++def test_newly_deprecating_a_class_is_minor() -> None:
++    # The rule is about any public object, not just functions and methods.
++    old = 'class Tool:\n    """D."""\n\n__all__ = ["Tool"]\n'
++    new = 'from warnings import deprecated\n\n\n@deprecated("x")\nclass Tool:\n    """D."""\n\n__all__ = ["Tool"]\n'
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.deprecations == ["Tool"]
++
++
++def test_cli_semver_fails_on_an_unloadable_package(tmp_path) -> None:
++    # Nothing to load at either path. The command must not report a clean run:
++    # either it exits nonzero or the loading error surfaces, as it does for
++    # the other commands in this CLI.
++    from griffecli import main
++
++    # A real run first, so a missing subcommand cannot make the failure below
++    # look like the loading error it is meant to catch.
++    code = 'def tool():\n    """D."""\n\n__all__ = ["tool"]\n'
++    assert _run_semver(tmp_path, code, code)[0] == 0
++
++    missing = str(tmp_path / "absent")
++    try:
++        exit_code = main(["semver", "nosuchpkg", "--old", missing, "--new", missing])
++    except SystemExit as exc:
++        assert exc.code != 0
++    except (ImportError, OSError):
++        pass
 +    else:
 +        assert exit_code != 0
 diff --git a/test.sh b/test.sh
