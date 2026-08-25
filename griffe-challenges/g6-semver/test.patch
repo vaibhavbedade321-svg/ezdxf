@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..5062f855
+index 00000000..f471322c
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1960 @@
+@@ -0,0 +1,2020 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1964,6 +1964,66 @@ index 00000000..5062f855
 +    report = _bump(old, new)
 +    assert report.bump is griffe.Bump.MAJOR
 +    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["f"]
++
++
++def test_all_binds_submodules_too() -> None:
++    # `internal` is not listed, so it was never on the surface and losing it
++    # changes nothing a caller could import.
++    old = {
++        "__init__.py": 'from semold import api\n\n__all__ = ["api"]\n',
++        "api.py": 'def run():\n    """D."""\n',
++        "internal.py": 'def helper():\n    """D."""\n',
++    }
++    new = {
++        "__init__.py": 'from semnew import api\n\n__all__ = ["api"]\n',
++        "api.py": 'def run():\n    """D."""\n',
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.changes
++
++
++def test_a_listed_submodule_that_vanishes_is_still_breaking() -> None:
++    # The exclusion above is about `__all__`, not about submodules as such.
++    old = {
++        "__init__.py": 'from semold import api, extra\n\n__all__ = ["api", "extra"]\n',
++        "api.py": 'def run():\n    """D."""\n',
++        "extra.py": 'def helper():\n    """D."""\n',
++    }
++    new = {
++        "__init__.py": 'from semnew import api\n\n__all__ = ["api"]\n',
++        "api.py": 'def run():\n    """D."""\n',
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert "extra" in {change.path for change in report.changes}
++
++
++_ABSENT_BOTH = 'from dependency import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n'
++_ABSENT_ONE = 'from dependency import Widget as A\n\n__all__ = ["A"]\n'
++
++
++def test_dropping_a_spare_unresolved_re_export_is_a_removal() -> None:
++    # `dependency` is not loaded, so neither alias resolves, but both record
++    # the same import target and are therefore one object under two names.
++    report = _bump_multi({"__init__.py": _ABSENT_BOTH}, {"__init__.py": _ABSENT_ONE})
++    assert report.bump is griffe.Bump.MAJOR
++    assert report.removals == ["B"]
++    assert not report.breaking
++
++
++def test_gaining_a_spare_unresolved_re_export_is_an_addition() -> None:
++    report = _bump_multi({"__init__.py": _ABSENT_ONE}, {"__init__.py": _ABSENT_BOTH})
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions == ["B"]
++
++
++def test_an_unresolved_re_export_leaving_entirely_is_breaking() -> None:
++    old = {"__init__.py": 'from dependency import Widget as A\n\ndef keep():\n    """D."""\n\n__all__ = ["A", "keep"]\n'}
++    new = {"__init__.py": 'def keep():\n    """D."""\n\n__all__ = ["keep"]\n'}
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MAJOR
++    assert [change.path for change in report.changes_of_kind(griffe.ChangeKind.BREAKING)] == ["A"]
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0

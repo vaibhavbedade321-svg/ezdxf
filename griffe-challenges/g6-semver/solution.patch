@@ -321,10 +321,10 @@ index 17e346aa..32a22da3 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 00000000..4b121d28
+index 00000000..7e58fd67
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,880 @@
+@@ -0,0 +1,888 @@
 +from __future__ import annotations
 +
 +import re
@@ -627,12 +627,12 @@ index 00000000..4b121d28
 +        if name == "__all__":
 +            # The export list is metadata about the surface, not part of it.
 +            continue
-+        if exports is not None and name not in exports and not _is_submodule(member):
-+            # A module that declares `__all__` exports exactly those names.
-+            # `Object.is_public` tests the list for truthiness, so an empty
-+            # one falls through there and everything defined looks public;
-+            # an explicit empty `__all__` exports nothing. Submodules keep
-+            # griffe's convention of being public unless underscored.
++        if exports is not None and name not in exports:
++            # A module that declares `__all__` exports exactly those names,
++            # submodules included. `Object.is_public` tests the list for
++            # truthiness, so an empty one falls through there and everything
++            # defined looks public, and it exempts modules from the list
++            # altogether; neither holds for the surface compared here.
 +            continue
 +        try:
 +            public = member.is_public
@@ -656,19 +656,22 @@ index 00000000..4b121d28
 +            yield from _iter_public(target, member_path, seen | {target.path})
 +
 +
-+def _is_submodule(member: Any) -> bool:
-+    """Whether a member is a module, treating an unresolvable alias as not one.
++def _identity(target: Any) -> str:
++    """Return the path that identifies what an exported name reaches.
++
++    A resolved member is itself. An alias whose target was never loaded is
++    not, but it still records where it imported from, so two spellings of one
++    absent import are recognised as the same object rather than as two.
 +
 +    Parameters:
-+        member: The member to inspect.
++        target: The object or unresolved alias an export reaches.
 +
 +    Returns:
-+        Whether the member is a module.
++        The identifying path.
 +    """
-+    try:
-+        return bool(member.is_module)
-+    except (AliasResolutionError, CyclicAliasError):
-+        return False
++    if target.is_alias:
++        return target.target_path  # ty:ignore[unresolved-attribute]
++    return target.path
 +
 +
 +def _members_of(obj: Object) -> dict[str, Any]:
@@ -738,17 +741,18 @@ index 00000000..4b121d28
 +    Names in `ignore` are dropped before that choice is made, which keeps an
 +    ignored alias from deciding the path of an object still exported elsewhere.
 +    """
-+    candidates: dict[str, list[str]] = {}
-+    targets: dict[str, Object] = {}
++    candidates: dict[str, dict[str, Object]] = {}
 +    for public_path, target in _iter_public(module, module.name):
 +        relative = _relative(public_path, module.name, module.path)
 +        if relative.split(".", 1)[0] in ignore:
 +            continue
-+        candidates.setdefault(target.path, []).append(relative)
-+        targets[target.path] = target
++        candidates.setdefault(_identity(target), {})[relative] = target
 +    result: dict[str, Object] = {}
-+    for canonical, paths in candidates.items():
-+        result[min(paths, key=_index_key)] = targets[canonical]
++    for reached in candidates.values():
++        chosen = min(reached, key=_index_key)
++        # The object stored is the one that chosen path reaches, so the two
++        # always agree even when several spellings share an identity.
++        result[chosen] = reached[chosen]
 +    return result
 +
 +
@@ -773,7 +777,7 @@ index 00000000..4b121d28
 +        if relative.split(".", 1)[0] not in ignore:
 +            # Grouping only ever compares names inside one model, so the
 +            # canonical path is kept whole and cannot collide with another.
-+            paths[relative] = target.path
++            paths[relative] = _identity(target)
 +    return paths
 +
 +
@@ -1086,25 +1090,21 @@ index 00000000..4b121d28
 +    roots = (old.path, new.path, old.name, new.name)
 +    old_names = _public_paths(old, ignored)
 +    new_names = _public_paths(new, ignored)
-+    # Keyed by the canonical path itself: two re-exports of same-named objects
-+    # from different modules must not collapse onto one entry, which dropping
-+    # a leading component would do.
-+    old_surface = {obj.path: path for path, obj in old_index.items()}
-+    new_surface = {obj.path: path for path, obj in new_index.items()}
++    # Keyed by what an export reaches, so every spelling of one object lands
++    # on its compared path, while two same-named objects from different
++    # modules stay apart, which dropping a leading component would not.
++    old_surface = {_identity(obj): path for path, obj in old_index.items()}
++    new_surface = {_identity(obj): path for path, obj in new_index.items()}
 +
 +    def _surface(obj: Object) -> str:
 +        """Name an object by a compared path, preferring one that still exists."""
-+        was = old_surface.get(obj.path)
-+        now = new_surface.get(obj.path)
++        was = old_surface.get(_identity(obj))
++        now = new_surface.get(_identity(obj))
 +        if was is not None and (was in new_names or now is None):
 +            return was
 +        return now or was or _relative(obj.path, *roots)
 +
 +    lost_names, gained_names = _name_deltas(old_names, new_names)
-+
-+    def _lost_spelling(breakage: Any) -> bool:
-+        """Whether a removal only took one of an object's export names away."""
-+        return isinstance(breakage, ObjectRemovedBreakage) and _surface(breakage.obj) in lost_names
 +
 +    def _eligible(breakage: Any) -> bool:
 +        """Whether a breakage describes a change to something both versions expose.
@@ -1115,9 +1115,17 @@ index 00000000..4b121d28
 +        object that stayed on the surface: a path exported by only one version
 +        arrived or left, which is reported by name instead.
 +        """
-+        path = _surface(breakage.obj)
 +        if isinstance(breakage, ObjectRemovedBreakage):
-+            return path in old_names and not _lost_spelling(breakage)
++            # A removal is about the name that vanished. For an export name
++            # that is the alias itself, since the object behind it may answer
++            # to other spellings; anything else is named as usual.
++            gone = (
++                _relative(breakage.obj.path, *roots)
++                if breakage.obj.is_alias
++                else _surface(breakage.obj)
++            )
++            return gone in old_names and gone not in lost_names
++        path = _surface(breakage.obj)
 +        return path in old_names and path in new_names
 +
 +    breaking = [
