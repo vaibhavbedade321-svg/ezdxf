@@ -1,9 +1,9 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 0000000..8dc0c20
+index 00000000..e7a12ff7
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1296 @@
+@@ -0,0 +1,1339 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
@@ -1300,9 +1300,52 @@ index 0000000..8dc0c20
 +    assert dotted.breaking
 +    assert whole.bump is griffe.Bump.PATCH
 +    assert not whole.breaking
++
++
++def test_attribute_annotation_change_is_patch() -> None:
++    # Declaring a type annotation that was missing is a gain; replacing one
++    # that was already there is not, in either direction.
++    report = _bump('x: int = 1\n\n__all__ = ["x"]\n', 'x: str = 1\n\n__all__ = ["x"]\n')
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.expansions
++    assert not report.changes
++
++
++def test_attribute_annotation_removal_is_patch() -> None:
++    report = _bump('x: int = 1\n\n__all__ = ["x"]\n', 'x = 1\n\n__all__ = ["x"]\n')
++    assert report.bump is griffe.Bump.PATCH
++    assert not report.expansions
++    assert not report.changes
++
++
++def test_attribute_annotation_newly_declared_is_minor() -> None:
++    report = _bump('x = 1\n\n__all__ = ["x"]\n', 'x: int = 1\n\n__all__ = ["x"]\n')
++    assert report.bump is griffe.Bump.MINOR
++    assert report.expansions == ["x"]
++
++
++def test_object_exported_twice_is_reported_under_one_path() -> None:
++    # `Widget` is reachable as both `A` and `B`. Each object is compared under
++    # a single exported path, so the added method is reported once, under one
++    # of the two names rather than both and never under the definition site.
++    old = {
++        "__init__.py": 'from semold.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
++        "inner.py": 'class Widget:\n    """D."""\n\n    def run(self):\n        """D."""\n',
++    }
++    new = {
++        "__init__.py": 'from semnew.inner import Widget as A, Widget as B\n\n__all__ = ["A", "B"]\n',
++        "inner.py": (
++            'class Widget:\n    """D."""\n\n'
++            '    def run(self):\n        """D."""\n\n'
++            '    def y(self):\n        """D."""\n'
++        ),
++    }
++    report = _bump_multi(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions in (["A.y"], ["B.y"])
 diff --git a/test.sh b/test.sh
 new file mode 100755
-index 0000000..dcf581f
+index 00000000..dcf581f0
 --- /dev/null
 +++ b/test.sh
 @@ -0,0 +1,51 @@
