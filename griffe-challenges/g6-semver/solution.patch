@@ -1,8 +1,56 @@
+diff --git a/docs/reference/api/cli.md b/docs/reference/api/cli.md
+index c806e83c..030aa0a7 100644
+--- a/docs/reference/api/cli.md
++++ b/docs/reference/api/cli.md
+@@ -8,6 +8,8 @@
+ 
+ ::: griffecli.dump
+ 
++::: griffecli.semver
++
+ ## **Advanced API**
+ 
+ ::: griffecli.get_parser
+diff --git a/docs/reference/api/semver.md b/docs/reference/api/semver.md
+new file mode 100644
+index 00000000..79ee69d4
+--- /dev/null
++++ b/docs/reference/api/semver.md
+@@ -0,0 +1,11 @@
++# Semantic versioning
++
++::: griffe.recommend_bump
++
++::: griffe.bump_between
++
++::: griffe.BumpReport
++
++::: griffe.Bump
++
++::: griffe.ChangeKind
+diff --git a/mkdocs.yml b/mkdocs.yml
+index d96eea3e..2079a85c 100644
+--- a/mkdocs.yml
++++ b/mkdocs.yml
+@@ -103,6 +103,7 @@ nav:
+     - Agents: reference/api/agents.md
+     - Serializers: reference/api/serializers.md
+     - API checks: reference/api/checks.md
++    - Semantic versioning: reference/api/semver.md
+     - Extensions: reference/api/extensions.md
+     - Docstrings:
+       - reference/api/docstrings.md
 diff --git a/packages/griffecli/src/griffecli/__init__.py b/packages/griffecli/src/griffecli/__init__.py
-index b7c23fc1..4c9bd1cd 100644
+index b7c23fc1..4c0c2af3 100644
 --- a/packages/griffecli/src/griffecli/__init__.py
 +++ b/packages/griffecli/src/griffecli/__init__.py
-@@ -16,7 +16,7 @@ This package provides command-line tools for interacting with griffe.
+@@ -11,12 +11,13 @@ This package provides command-line tools for interacting with griffe.
+ - [`griffecli.main`][]: Run the main program.
+ - [`griffecli.check`][]: Check for API breaking changes in two versions of the same package.
+ - [`griffecli.dump`][]: Load packages data and dump it as JSON.
++- [`griffecli.semver`][]: Recommend a semantic version bump between two versions of a package.
+ - [`griffecli.get_parser`][]: Get the argument parser for the CLI.
+ """
  
  from __future__ import annotations
  
@@ -11,7 +59,7 @@ index b7c23fc1..4c9bd1cd 100644
  
  __all__ = [
      "DEFAULT_LOG_LEVEL",
-@@ -24,4 +24,5 @@ __all__ = [
+@@ -24,4 +25,5 @@ __all__ = [
      "dump",
      "get_parser",
      "main",
@@ -273,10 +321,10 @@ index 17e346aa..32a22da3 100644
 +    """A public object was newly marked as deprecated."""
 diff --git a/packages/griffelib/src/griffe/_internal/semver.py b/packages/griffelib/src/griffe/_internal/semver.py
 new file mode 100644
-index 00000000..4626e790
+index 00000000..dbec93c9
 --- /dev/null
 +++ b/packages/griffelib/src/griffe/_internal/semver.py
-@@ -0,0 +1,668 @@
+@@ -0,0 +1,717 @@
 +from __future__ import annotations
 +
 +import re
@@ -574,14 +622,24 @@ index 00000000..4626e790
 +    already entered on the current branch, which stops an alias cycle without
 +    hiding a second, equally public export.
 +    """
-+    for name, member in obj.members.items():
-+        if not member.is_public:
++    for name, member in _members_of(obj).items():
++        if name == "__all__":
++            # The export list is metadata about the surface, not part of it.
++            continue
++        try:
++            public = member.is_public
++        except (AliasResolutionError, CyclicAliasError):
++            # An alias to something that was never loaded still occupies its
++            # exported name, so keep it on the surface under that name.
++            public = not name.startswith("_")
++        if not public:
 +            continue
 +        member_path = f"{path}.{name}"
 +        if member.is_alias:
 +            try:
 +                target = member.final_target  # ty:ignore[unresolved-attribute]
 +            except (AliasResolutionError, CyclicAliasError):
++                yield member_path, member  # ty:ignore[invalid-yield]
 +                continue
 +        else:
 +            target = member
@@ -590,14 +648,49 @@ index 00000000..4626e790
 +            yield from _iter_public(target, member_path, seen | {target.path})
 +
 +
-+def _relative(path: str) -> str:
-+    """Drop the leading package component so two versions compare by identity.
++def _members_of(obj: Object) -> dict[str, Any]:
++    """Return the members a caller can reach on an object.
 +
-+    Only the first dotted segment is dropped: every object path begins with the
-+    name the package was loaded under, so this makes the comparison independent
-+    of that name, whether the path comes from the old model, the new model or a
-+    breakage record.
++    Classes expose what they inherit as well as what they declare, which is the
++    same notion of membership the breaking-change detector walks, so a method
++    that arrives through a private base is still part of the public surface of
++    the class that exposes it.
++
++    Parameters:
++        obj: The object to enumerate.
++
++    Returns:
++        A mapping of member name to member.
 +    """
++    if obj.is_class:
++        try:
++            return dict(obj.all_members)
++        except (AliasResolutionError, CyclicAliasError):
++            return dict(obj.members)
++    return dict(obj.members)
++
++
++def _relative(path: str, *roots: str) -> str:
++    """Drop the loaded package prefix so two versions compare by identity.
++
++    A package can be loaded under a dotted name such as `acme.library`, so the
++    whole of it is removed, not merely the first segment. The roots of both
++    models are tried, since a path can come from the old model, the new model
++    or a breakage record. Failing that, the first segment is dropped, which is
++    what a single-segment package name amounts to.
++
++    Parameters:
++        path: The path to make relative.
++        *roots: The names the models were loaded under.
++
++    Returns:
++        The path relative to whichever root it lies under.
++    """
++    for root in sorted(roots, key=len, reverse=True):
++        if path == root:
++            return path
++        if root and path.startswith(f"{root}."):
++            return path[len(root) + 1 :]
 +    _, _, rest = path.partition(".")
 +    return rest or path
 +
@@ -625,7 +718,7 @@ index 00000000..4626e790
 +    candidates: dict[str, list[str]] = {}
 +    targets: dict[str, Object] = {}
 +    for public_path, target in _iter_public(module, module.name):
-+        relative = _relative(public_path)
++        relative = _relative(public_path, module.name, module.path)
 +        if relative.split(".", 1)[0] in ignore:
 +            continue
 +        candidates.setdefault(target.path, []).append(relative)
@@ -848,8 +941,11 @@ index 00000000..4626e790
 +    from griffe._internal.loader import load  # noqa: PLC0415
 +
 +    shared = list(search_paths)
-+    old = load(package, search_paths=[old_path, *shared], **load_options)
-+    new = load(package, search_paths=[new_path, *shared], **load_options)
++    # The two roots define the comparison, so a same-named package sitting in
++    # the working directory must never be picked up instead of either of them.
++    load_options.pop("try_relative_path", None)
++    old = load(package, search_paths=[old_path, *shared], try_relative_path=False, **load_options)
++    new = load(package, search_paths=[new_path, *shared], try_relative_path=False, **load_options)
 +    return recommend_bump(old, new, ignore=ignore)  # ty:ignore[invalid-argument-type]
 +
 +
@@ -883,11 +979,12 @@ index 00000000..4626e790
 +    old_index = _public_index(old, ignored)
 +    new_index = _public_index(new, ignored)
 +
-+    to_surface = {_relative(obj.path): path for path, obj in old_index.items()}
-+    to_surface.update({_relative(obj.path): path for path, obj in new_index.items()})
++    roots = (old.path, new.path, old.name, new.name)
++    to_surface = {_relative(obj.path, *roots): path for path, obj in old_index.items()}
++    to_surface.update({_relative(obj.path, *roots): path for path, obj in new_index.items()})
 +
 +    def _surface(obj: Object) -> str:
-+        relative = _relative(obj.path)
++        relative = _relative(obj.path, *roots)
 +        return to_surface.get(relative, relative)
 +
 +    breaking = [

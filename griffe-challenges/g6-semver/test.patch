@@ -1,14 +1,15 @@
 diff --git a/packages/griffelib/tests/test_semver_recommend.py b/packages/griffelib/tests/test_semver_recommend.py
 new file mode 100644
-index 00000000..f8b05a44
+index 00000000..4143ca3e
 --- /dev/null
 +++ b/packages/griffelib/tests/test_semver_recommend.py
-@@ -0,0 +1,1464 @@
+@@ -0,0 +1,1532 @@
 +"""Tests for the semantic version bump recommendation."""
 +
 +from __future__ import annotations
 +
 +import json
++from textwrap import dedent
 +
 +import pytest
 +
@@ -1468,6 +1469,73 @@ index 00000000..f8b05a44
 +    report = griffe.bump_between("extpkg", str(tmp_path / "old"), str(tmp_path / "new"))
 +    assert report.bump is griffe.Bump.MAJOR
 +    assert "Widget" in {change.path for change in report.changes}
++
++
++def test_member_inherited_from_a_private_base_is_part_of_the_surface() -> None:
++    # `_Base` is not public, but `Public` exposes what it inherits, so adding
++    # a method to the base adds it to the public surface.
++    old = (
++        'class _Base:\n    """D."""\n\n'
++        'class Public(_Base):\n    """D."""\n\n__all__ = ["Public"]\n'
++    )
++    new = (
++        'class _Base:\n    """D."""\n\n    def extra(self):\n        """D."""\n\n'
++        'class Public(_Base):\n    """D."""\n\n__all__ = ["Public"]\n'
++    )
++    report = _bump(old, new)
++    assert report.bump is griffe.Bump.MINOR
++    assert report.additions == ["Public.extra"]
++
++
++def _write_vpkg(root, name: str, code: str) -> str:
++    package = root / name / "vpkg"
++    package.mkdir(parents=True)
++    (package / "__init__.py").write_text(dedent(code), encoding="utf8")
++    return str(root / name)
++
++
++def test_bump_between_ignores_a_same_named_package_in_the_working_directory(
++    tmp_path,
++    monkeypatch,
++) -> None:
++    # The two roots define the comparison; a `vpkg` sitting in the process's
++    # working directory must not be loaded in place of either of them.
++    both = 'def keep(a, b):\n    """D."""\n\n__all__ = ["keep"]\n'
++    old_root = _write_vpkg(tmp_path, "old", both)
++    new_root = _write_vpkg(tmp_path, "new", 'def keep(a):\n    """D."""\n\n__all__ = ["keep"]\n')
++    _write_vpkg(tmp_path, "cwd", both)
++    monkeypatch.chdir(tmp_path / "cwd")
++
++    report = griffe.bump_between("vpkg", old_root, new_root)
++    assert report.bump is griffe.Bump.MAJOR
++    assert [change.path for change in report.changes] == ["keep"]
++
++
++def _write_dotted(root, name: str, body: str) -> str:
++    package = root / name / "acme" / "library"
++    package.mkdir(parents=True)
++    (package / "__init__.py").write_text(dedent(body), encoding="utf8")
++    (root / name / "acme" / "__init__.py").write_text("", encoding="utf8")
++    return str(root / name)
++
++
++def test_dotted_package_paths_are_relative_to_the_whole_package_name(tmp_path) -> None:
++    # Loaded as `acme.library`, so the exported path of the dropped re-export
++    # is `Widget`, not `library.Widget`, and `ignore` matches it as one segment.
++    old_root = _write_dotted(
++        tmp_path,
++        "old",
++        'from dependency import Widget\n\ndef keep():\n    """D."""\n\n__all__ = ["Widget", "keep"]\n',
++    )
++    new_root = _write_dotted(tmp_path, "new", 'def keep():\n    """D."""\n\n__all__ = ["keep"]\n')
++
++    report = griffe.bump_between("acme.library", old_root, new_root)
++    assert report.bump is griffe.Bump.MAJOR
++    assert [change.path for change in report.changes] == ["Widget"]
++
++    ignored = griffe.bump_between("acme.library", old_root, new_root, ignore=("Widget",))
++    assert ignored.bump is griffe.Bump.PATCH
++    assert not ignored.changes
 diff --git a/test.sh b/test.sh
 new file mode 100755
 index 00000000..dcf581f0
